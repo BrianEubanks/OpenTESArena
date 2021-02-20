@@ -7,28 +7,25 @@
 #include "MainQuestSplashPanel.h"
 #include "TextAlignment.h"
 #include "TextSubPanel.h"
+#include "../Assets/ArenaTextureName.h"
+#include "../Assets/ArenaTypes.h"
 #include "../Assets/CityDataFile.h"
 #include "../Assets/MIFFile.h"
+#include "../Game/DateUtils.h"
 #include "../Game/Game.h"
 #include "../Game/GameData.h"
 #include "../Media/FontName.h"
-#include "../Media/MusicName.h"
 #include "../Media/MusicUtils.h"
-#include "../Media/PaletteFile.h"
-#include "../Media/PaletteName.h"
-#include "../Media/TextureFile.h"
 #include "../Media/TextureManager.h"
-#include "../Media/TextureName.h"
+#include "../Rendering/ArenaRenderUtils.h"
 #include "../World/LocationDefinition.h"
 #include "../World/LocationType.h"
 #include "../World/LocationUtils.h"
+#include "../World/SkyUtils.h"
 #include "../World/WeatherUtils.h"
 
 #include "components/debug/Debug.h"
 #include "components/utilities/String.h"
-
-const double FastTravelSubPanel::FRAME_TIME = 1.0 / 24.0;
-const double FastTravelSubPanel::MIN_SECONDS = 1.0;
 
 FastTravelSubPanel::FastTravelSubPanel(Game &game, const ProvinceMapPanel::TravelData &travelData)
 	: Panel(game), travelData(travelData)
@@ -44,18 +41,23 @@ FastTravelSubPanel::FastTravelSubPanel(Game &game, const ProvinceMapPanel::Trave
 
 const std::string &FastTravelSubPanel::getBackgroundFilename() const
 {
-	return TextureFile::fromName(TextureName::WorldMap);
+	return ArenaTextureName::WorldMap;
 }
 
-const std::vector<Texture> &FastTravelSubPanel::getAnimation() const
+TextureBuilderIdGroup FastTravelSubPanel::getAnimationTextureIDs() const
 {
 	auto &game = this->getGame();
-	auto &renderer = game.getRenderer();
 	auto &textureManager = game.getTextureManager();
-	const std::vector<Texture> &animation = textureManager.getTextures(
-		TextureFile::fromName(TextureName::FastTravel),
-		this->getBackgroundFilename(), renderer);
-	return animation;
+
+	const std::string &textureFilename = ArenaTextureName::FastTravel;
+	const std::optional<TextureBuilderIdGroup> textureBuilderIDs =
+		textureManager.tryGetTextureBuilderIDs(textureFilename.c_str());
+	if (!textureBuilderIDs.has_value())
+	{
+		DebugCrash("Couldn't get texture builder IDs for \"" + textureFilename + "\".");
+	}
+
+	return *textureBuilderIDs;
 }
 
 std::unique_ptr<Panel> FastTravelSubPanel::makeCityArrivalPopUp() const
@@ -65,20 +67,19 @@ std::unique_ptr<Panel> FastTravelSubPanel::makeCityArrivalPopUp() const
 	auto &renderer = game.getRenderer();
 
 	const bool modernInterface = game.getOptions().getGraphics_ModernInterface();
-	const Int2 center = GameWorldPanel::getInterfaceCenter(
-		modernInterface, textureManager, renderer) - Int2(0, 1);
+	const Int2 center = GameWorldPanel::getInterfaceCenter(modernInterface, textureManager) - Int2(0, 1);
 
 	const std::string text = [this, &game]()
 	{
 		auto &gameData = game.getGameData();
-		const auto &miscAssets = game.getMiscAssets();
-		const auto &exeData = miscAssets.getExeData();
+		const auto &binaryAssetLibrary = game.getBinaryAssetLibrary();
+		const auto &exeData = binaryAssetLibrary.getExeData();
 
 		// @todo: change these to 'index' so it's clear they don't rely on original game's 0-32, etc..
 		const int provinceID = this->travelData.provinceID;
 		const int localCityID = this->travelData.locationID;
 
-		const WorldMapDefinition &worldMapDef = miscAssets.getWorldMapDefinition();
+		const WorldMapDefinition &worldMapDef = gameData.getWorldMapDefinition();
 		const ProvinceDefinition &provinceDef = worldMapDef.getProvinceDef(provinceID);
 		const LocationDefinition &locationDef = provinceDef.getLocationDef(localCityID);
 
@@ -135,7 +136,7 @@ std::unique_ptr<Panel> FastTravelSubPanel::makeCityArrivalPopUp() const
 		const std::string dateString = [&gameData, &exeData]()
 		{
 			return exeData.travel.arrivalPopUpDate +
-				GameData::getDateString(gameData.getDate(), exeData);
+				DateUtils::getDateString(gameData.getDate(), exeData);
 		}();
 
 		const std::string daysString = [this, &exeData]()
@@ -149,22 +150,22 @@ std::unique_ptr<Panel> FastTravelSubPanel::makeCityArrivalPopUp() const
 			return text;
 		}();
 
-		const std::string locationDescriptionString = [&game, &gameData, &exeData,
-			provinceID, localCityID, &locationDef]()
+		const auto &textAssetLibrary = game.getTextAssetLibrary();
+		const std::string locationDescriptionString = [&game, &gameData, &binaryAssetLibrary,
+			&textAssetLibrary, &exeData, provinceID, localCityID, &locationDef]()
 		{
-			const auto &miscAssets = game.getMiscAssets();
 			const LocationType locationType = LocationUtils::getCityType(localCityID);
 
 			// Get the description for the local location. If it's a town or village, choose
 			// one of the three substrings randomly. Otherwise, get the city description text
 			// directly.
-			const std::string description = [&gameData, &exeData, provinceID, localCityID,
-				&locationDef, locationType, &miscAssets]()
+			const std::string description = [&gameData, &binaryAssetLibrary, &textAssetLibrary,
+				&exeData, provinceID, localCityID, &locationDef, locationType]()
 			{
 				// City descriptions start at #0600. The three town descriptions are at #1422,
 				// and the three village descriptions are at #1423.
-				const std::vector<std::string> &templateDatTexts = [provinceID, localCityID,
-					locationType, &miscAssets]()
+				const std::vector<std::string> &templateDatTexts = [&binaryAssetLibrary,
+					&textAssetLibrary, provinceID, localCityID, locationType]()
 				{
 					// Get the key that maps into TEMPLATE.DAT.
 					const int key = [provinceID, localCityID, locationType]()
@@ -188,7 +189,7 @@ std::unique_ptr<Panel> FastTravelSubPanel::makeCityArrivalPopUp() const
 						}
 					}();
 
-					const auto &templateDat = miscAssets.getTemplateDat();
+					const auto &templateDat = textAssetLibrary.getTemplateDat();
 					const auto &entry = templateDat.getEntry(key);
 					return entry.values;
 				}();
@@ -209,7 +210,7 @@ std::unique_ptr<Panel> FastTravelSubPanel::makeCityArrivalPopUp() const
 					size_t index = description.find("%cn");
 					description.replace(index, 3, locationDef.getName());
 
-					const auto &cityData = miscAssets.getCityDataFile();
+					const auto &cityData = binaryAssetLibrary.getCityDataFile();
 					const auto &province = cityData.getProvinceData(provinceID);
 					const uint32_t rulerSeed = [localCityID, &cityData, &province]()
 					{
@@ -225,7 +226,7 @@ std::unique_ptr<Panel> FastTravelSubPanel::makeCityArrivalPopUp() const
 					index = description.find("%t");
 					if (index != std::string::npos)
 					{
-						const std::string &rulerTitle = miscAssets.getRulerTitle(
+						const std::string &rulerTitle = binaryAssetLibrary.getRulerTitle(
 							provinceID, locationType, isMale, random);
 						description.replace(index, 2, rulerTitle);
 					}
@@ -236,10 +237,10 @@ std::unique_ptr<Panel> FastTravelSubPanel::makeCityArrivalPopUp() const
 					index = description.find("%rf");
 					if (index != std::string::npos)
 					{
-						const std::string rulerFirstName = [&miscAssets, provinceID,
+						const std::string rulerFirstName = [&textAssetLibrary, provinceID,
 							&random, isMale]()
 						{
-							const std::string fullName = miscAssets.generateNpcName(
+							const std::string fullName = textAssetLibrary.generateNpcName(
 								provinceID, isMale, random);
 							const std::vector<std::string> tokens = String::split(fullName, ' ');
 							return tokens.front();
@@ -296,9 +297,9 @@ std::unique_ptr<Panel> FastTravelSubPanel::makeCityArrivalPopUp() const
 		color,
 		TextAlignment::Center,
 		lineSpacing,
-		game.getFontManager());
+		game.getFontLibrary());
 
-	Texture texture = Texture::generate(Texture::PatternType::Dark,
+	Texture texture = TextureUtils::generate(TextureUtils::PatternType::Dark,
 		richText.getDimensions().x + 10, richText.getDimensions().y + 12,
 		textureManager, renderer);
 
@@ -313,15 +314,9 @@ std::unique_ptr<Panel> FastTravelSubPanel::makeCityArrivalPopUp() const
 		std::move(texture), textureCenter);
 }
 
-Panel::CursorData FastTravelSubPanel::getCurrentCursor() const
+std::optional<Panel::CursorData> FastTravelSubPanel::getCurrentCursor() const
 {
-	auto &game = this->getGame();
-	auto &renderer = game.getRenderer();
-	auto &textureManager = game.getTextureManager();
-	const auto &texture = textureManager.getTexture(
-		TextureFile::fromName(TextureName::SwordCursor),
-		PaletteFile::fromName(PaletteName::Default), renderer);
-	return CursorData(&texture, CursorAlignment::TopLeft);
+	return this->getDefaultCursor();
 }
 
 void FastTravelSubPanel::tickTravelTime(Random &random) const
@@ -356,13 +351,12 @@ void FastTravelSubPanel::switchToNextPanel()
 	// Handle fast travel behavior and decide which panel to switch to.
 	auto &game = this->getGame();
 	auto &gameData = game.getGameData();
-	const auto &miscAssets = game.getMiscAssets();
-	const auto &exeData = miscAssets.getExeData();
-	const auto &worldMapDef = miscAssets.getWorldMapDefinition();
+	const auto &binaryAssetLibrary = game.getBinaryAssetLibrary();
+	const auto &exeData = binaryAssetLibrary.getExeData();
+	const WorldMapDefinition &worldMapDef = gameData.getWorldMapDefinition();
 
 	// Update game clock.
-	Random random;
-	this->tickTravelTime(random);
+	this->tickTravelTime(game.getRandom());
 
 	// Update weathers.
 	gameData.updateWeather(exeData);
@@ -379,106 +373,167 @@ void FastTravelSubPanel::switchToNextPanel()
 	// pushing new ones, so call order doesn't matter.
 	game.popSubPanel();
 
+	const auto &travelProvinceDef = worldMapDef.getProvinceDef(this->travelData.provinceID);
+	const auto &travelLocationDef = travelProvinceDef.getLocationDef(this->travelData.locationID);
+
 	// Decide how to load the location.
-	if (this->travelData.locationID < 32)
+	if (travelLocationDef.getType() == LocationDefinition::Type::City)
 	{
 		// Get weather type from game data.
-		const WeatherType weatherType = [this, &game, &gameData, &miscAssets]()
+		const LocationDefinition::CityDefinition &cityDef = travelLocationDef.getCityDefinition();
+		const WeatherType weatherType = [this, &game, &gameData, &binaryAssetLibrary,
+			&travelProvinceDef, &travelLocationDef, &cityDef]()
 		{
-			const auto &cityData = miscAssets.getCityDataFile();
-			const auto &provinceData = cityData.getProvinceData(this->travelData.provinceID);
-			const auto &locationData = provinceData.getLocationData(this->travelData.locationID);
-			const Int2 localPoint(locationData.x, locationData.y);
+			const Int2 localPoint(travelLocationDef.getScreenX(), travelLocationDef.getScreenY());
 			const Int2 globalPoint = LocationUtils::getGlobalPoint(
-				localPoint, provinceData.getGlobalRect());
+				localPoint, travelProvinceDef.getGlobalRect());
+
+			const auto &cityData = binaryAssetLibrary.getCityDataFile();
 			const int globalQuarter = LocationUtils::getGlobalQuarter(globalPoint, cityData);
-			const WeatherType type = gameData.getWeathersArray().at(globalQuarter);
-			const ClimateType climateType = LocationUtils::getCityClimateType(
-				this->travelData.locationID, this->travelData.provinceID, game.getMiscAssets());
-			return WeatherUtils::getFilteredWeatherType(type, climateType);
+
+			const auto &weathersArray = gameData.getWeathersArray();
+			DebugAssertIndex(weathersArray, globalQuarter);
+			return WeatherUtils::getFilteredWeatherType(weathersArray[globalQuarter], cityDef.climateType);
 		}();
 
-		const int starCount = DistantSky::getStarCountFromDensity(
+		const int starCount = SkyUtils::getStarCountFromDensity(
 			game.getOptions().getMisc_StarDensity());
 
-		const auto &travelProvinceDef = worldMapDef.getProvinceDef(this->travelData.provinceID);
-		const auto &travelLocationDef = travelProvinceDef.getLocationDef(this->travelData.locationID);
-
 		// Load the destination city.
-		gameData.loadCity(this->travelData.locationID, this->travelData.provinceID, travelLocationDef,
-			travelProvinceDef, weatherType, starCount, game.getMiscAssets(), game.getTextureManager(),
-			game.getRenderer());
+		if (!gameData.loadCity(travelLocationDef, travelProvinceDef, weatherType, starCount,
+			game.getEntityDefinitionLibrary(), game.getCharacterClassLibrary(), binaryAssetLibrary,
+			game.getTextAssetLibrary(), game.getRandom(), game.getTextureManager(),
+			game.getRenderer()))
+		{
+			DebugCrash("Couldn't load city \"" + travelLocationDef.getName() + "\".");
+		}
 
 		// Choose time-based music and enter the game world.
-		const MusicName musicName = gameData.nightMusicIsActive() ?
-			MusicName::Night : MusicUtils::getExteriorMusicName(weatherType);
-		game.setMusic(musicName);
+		const MusicLibrary &musicLibrary = game.getMusicLibrary();
+		const MusicDefinition *musicDef = [&game, &gameData, weatherType, &musicLibrary]()
+		{
+			if (!gameData.nightMusicIsActive())
+			{
+				return musicLibrary.getRandomMusicDefinitionIf(MusicDefinition::Type::Weather,
+					game.getRandom(), [weatherType](const MusicDefinition &def)
+				{
+					DebugAssert(def.getType() == MusicDefinition::Type::Weather);
+					const auto &weatherMusicDef = def.getWeatherMusicDefinition();
+					return weatherMusicDef.type == weatherType;
+				});
+			}
+			else
+			{
+				return musicLibrary.getRandomMusicDefinition(
+					MusicDefinition::Type::Night, game.getRandom());
+			}
+		}();
+
+		const MusicDefinition *jingleMusicDef = musicLibrary.getRandomMusicDefinitionIf(
+			MusicDefinition::Type::Jingle, game.getRandom(), [&cityDef](const MusicDefinition &def)
+		{
+			DebugAssert(def.getType() == MusicDefinition::Type::Jingle);
+			const auto &jingleMusicDef = def.getJingleMusicDefinition();
+			return (jingleMusicDef.cityType == cityDef.type) &&
+				(jingleMusicDef.climateType == cityDef.climateType);
+		});
+
+		if (musicDef == nullptr)
+		{
+			DebugLogWarning("Missing exterior music.");
+		}
+
+		if (jingleMusicDef == nullptr)
+		{
+			DebugLogWarning("Missing jingle music.");
+		}
+
+		AudioManager &audioManager = game.getAudioManager();
+		audioManager.setMusic(musicDef, jingleMusicDef);
+
 		game.setPanel<GameWorldPanel>(game);
 
 		// Push a text sub-panel for the city arrival pop-up.
 		std::unique_ptr<Panel> arrivalPopUp = this->makeCityArrivalPopUp();
 		game.pushSubPanel(std::move(arrivalPopUp));
 	}
-	else
+	else if (travelLocationDef.getType() == LocationDefinition::Type::Dungeon)
 	{
-		const int localDungeonID = this->travelData.locationID - 32;
+		// Random named dungeon.
+		const bool isArtifactDungeon = false;
+		const auto &travelProvinceDef = worldMapDef.getProvinceDef(this->travelData.provinceID);
+		const auto &travelLocationDef = travelProvinceDef.getLocationDef(this->travelData.locationID);
 
-		if ((localDungeonID == 0) || (localDungeonID == 1))
+		if (!gameData.loadNamedDungeon(travelLocationDef, travelProvinceDef, isArtifactDungeon,
+			game.getEntityDefinitionLibrary(), game.getCharacterClassLibrary(), binaryAssetLibrary,
+			game.getRandom(), game.getTextureManager(), game.getRenderer()))
 		{
-			// Main quest dungeon. The staff dungeons have a splash image before going
-			// to the game world panel.
-			const uint32_t dungeonSeed = [this, &miscAssets, localDungeonID]()
-			{
-				const int provinceID = this->travelData.provinceID;
-				const auto &cityData = miscAssets.getCityDataFile();
-				const auto &province = cityData.getProvinceData(provinceID);
-				return LocationUtils::getDungeonSeed(localDungeonID, provinceID, province);
-			}();
-			
-			const std::string mifName = LocationUtils::getMainQuestDungeonMifName(dungeonSeed);
-			MIFFile mif;
-			if (!mif.init(mifName.c_str()))
-			{
-				DebugCrash("Could not init .MIF file \"" + mifName + "\".");
-			}
+			DebugCrash("Couldn't load named dungeon \"" + travelLocationDef.getName() + "\".");
+		}
 
-			const Location location = Location::makeDungeon(
-				localDungeonID, this->travelData.provinceID);
-			gameData.loadInterior(VoxelDefinition::WallData::MenuType::Dungeon,
-				mif, location, miscAssets, game.getTextureManager(), game.getRenderer());
+		// Choose random dungeon music and enter game world.
+		const MusicLibrary &musicLibrary = game.getMusicLibrary();
+		const MusicDefinition *musicDef = musicLibrary.getRandomMusicDefinition(
+			MusicDefinition::Type::Dungeon, game.getRandom());
 
-			const bool isStaffDungeon = localDungeonID == 0;
+		if (musicDef == nullptr)
+		{
+			DebugLogWarning("Missing dungeon music.");
+		}
 
-			if (isStaffDungeon)
-			{
-				// Go to staff dungeon splash image first.
-				game.setPanel<MainQuestSplashPanel>(game, this->travelData.provinceID);
-			}
-			else
-			{
-				// Choose random dungeon music and enter game world.
-				const MusicName musicName = MusicUtils::getDungeonMusicName(random);
-				game.setMusic(musicName);
-				game.setPanel<GameWorldPanel>(game);
-			}
+		AudioManager &audioManager = game.getAudioManager();
+		audioManager.setMusic(musicDef);
+
+		game.setPanel<GameWorldPanel>(game);
+	}
+	else if (travelLocationDef.getType() == LocationDefinition::Type::MainQuestDungeon)
+	{
+		// Main quest dungeon. The staff dungeons have a splash image before going
+		// to the game world panel.
+		const LocationDefinition::MainQuestDungeonDefinition &mainQuestDungeonDef =
+			travelLocationDef.getMainQuestDungeonDefinition();
+		const std::string mifName = mainQuestDungeonDef.mapFilename;
+
+		MIFFile mif;
+		if (!mif.init(mifName.c_str()))
+		{
+			DebugCrash("Could not init .MIF file \"" + mifName + "\".");
+		}
+
+		if (!gameData.loadInterior(travelLocationDef, travelProvinceDef,
+			ArenaTypes::InteriorType::Dungeon, mif, game.getEntityDefinitionLibrary(),
+			game.getCharacterClassLibrary(), binaryAssetLibrary, game.getRandom(),
+			game.getTextureManager(), game.getRenderer()))
+		{
+			DebugCrash("Couldn't load interior \"" + travelLocationDef.getName() + "\".");
+		}
+
+		if (mainQuestDungeonDef.type == LocationDefinition::MainQuestDungeonDefinition::Type::Staff)
+		{
+			// Go to staff dungeon splash image first.
+			game.setPanel<MainQuestSplashPanel>(game, this->travelData.provinceID);
 		}
 		else
 		{
-			// Random named dungeon.
-			const bool isArtifactDungeon = false;
-			const auto &travelProvinceDef = worldMapDef.getProvinceDef(this->travelData.provinceID);
-			const auto &travelLocationDef = travelProvinceDef.getLocationDef(this->travelData.locationID);
-
-			gameData.loadNamedDungeon(localDungeonID, this->travelData.provinceID,
-				travelLocationDef, travelProvinceDef, isArtifactDungeon,
-				VoxelDefinition::WallData::MenuType::Dungeon, miscAssets,
-				game.getTextureManager(), game.getRenderer());
-
 			// Choose random dungeon music and enter game world.
-			const MusicName musicName = MusicUtils::getDungeonMusicName(random);
-			game.setMusic(musicName);
+			const MusicLibrary &musicLibrary = game.getMusicLibrary();
+			const MusicDefinition *musicDef = musicLibrary.getRandomMusicDefinition(
+				MusicDefinition::Type::Dungeon, game.getRandom());
+
+			if (musicDef == nullptr)
+			{
+				DebugLogWarning("Missing dungeon music.");
+			}
+
+			AudioManager &audioManager = game.getAudioManager();
+			audioManager.setMusic(musicDef);
+
 			game.setPanel<GameWorldPanel>(game);
 		}
+	}
+	else
+	{
+		DebugNotImplementedMsg(std::to_string(static_cast<int>(travelLocationDef.getType())));
 	}
 }
 
@@ -491,7 +546,7 @@ void FastTravelSubPanel::tick(double dt)
 		this->currentSeconds -= FastTravelSubPanel::FRAME_TIME;
 		this->frameIndex++;
 
-		if (this->frameIndex == this->getAnimation().size())
+		if (this->frameIndex == this->getAnimationTextureIDs().getCount())
 		{
 			this->frameIndex = 0;
 		}
@@ -508,10 +563,20 @@ void FastTravelSubPanel::tick(double dt)
 void FastTravelSubPanel::render(Renderer &renderer)
 {
 	// Draw horse animation.
-	const std::vector<Texture> &animation = this->getAnimation();
-	const Texture &animFrame = animation.at(this->frameIndex);
+	auto &textureManager = this->getGame().getTextureManager();
+	const std::string &paletteFilename = this->getBackgroundFilename();
+	const std::optional<PaletteID> paletteID = textureManager.tryGetPaletteID(paletteFilename.c_str());
+	if (!paletteID.has_value())
+	{
+		DebugLogError("Couldn't get palette ID for \"" + paletteFilename + "\".");
+		return;
+	}
 
-	const int x = (Renderer::ORIGINAL_WIDTH / 2) - (animFrame.getWidth() / 2);
-	const int y = (Renderer::ORIGINAL_HEIGHT / 2) - (animFrame.getHeight() / 2);
-	renderer.drawOriginal(animFrame, x, y);
+	const TextureBuilderIdGroup textureBuilderIDs = this->getAnimationTextureIDs();
+	const TextureBuilderID textureBuilderID = textureBuilderIDs.getID(static_cast<int>(this->frameIndex));
+	const TextureBuilder &textureBuilder = textureManager.getTextureBuilderHandle(textureBuilderID);
+
+	const int x = (ArenaRenderUtils::SCREEN_WIDTH / 2) - (textureBuilder.getWidth() / 2);
+	const int y = (ArenaRenderUtils::SCREEN_HEIGHT / 2) - (textureBuilder.getHeight() / 2);
+	renderer.drawOriginal(textureBuilderID, *paletteID, x, y, textureManager);
 }

@@ -6,7 +6,7 @@
 #include "LocationDefinition.h"
 #include "../Math/Rect.h"
 
-class MiscAssets;
+class BinaryAssetLibrary;
 
 class ProvinceDefinition
 {
@@ -18,7 +18,7 @@ private:
 	bool animatedDistantLand;
 public:
 	// Initialize from original game data.
-	void init(int provinceID, const MiscAssets &miscAssets);
+	void init(int provinceID, const BinaryAssetLibrary &binaryAssetLibrary);
 	// @todo: eventually have init(const char *filename) for custom provinces.
 
 	// Gets the number of locations in the province.
@@ -39,6 +39,12 @@ public:
 	// Whether the province contains any animated distant land like volcanoes.
 	// @todo: expand this into an actual data structure
 	bool hasAnimatedDistantLand() const;
+
+	// Returns whether the two definitions reference the same province in the world map.
+	bool matches(const ProvinceDefinition &other) const;
+
+	// Attempts to get the index of the given location definition in the province.
+	bool tryGetLocationIndex(const LocationDefinition &locationDef, int *outLocationIndex) const;
 };
 
 #endif

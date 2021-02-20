@@ -5,6 +5,8 @@
 #include <string>
 
 #include "../Math/Vector2.h"
+#include "../Media/TextureManager.h"
+#include "../Media/TextureUtils.h"
 
 // Each panel interprets user input and draws to the screen. There is only one panel 
 // active at a time, and it is owned by the Game.
@@ -15,7 +17,7 @@
 // can be separate interface objects (no need for a "ScrollableButtonedTextBox").
 
 class Color;
-class FontManager;
+class FontLibrary;
 class Game;
 class Renderer;
 class Texture;
@@ -30,15 +32,17 @@ union SDL_Event;
 class Panel
 {
 public:
-	class CursorData
+	class CursorData // @todo: rename to CursorDisplayState?
 	{
 	private:
-		const Texture *texture;
+		TextureBuilderID textureBuilderID; // @todo: maybe should be a UI texture handle at some point.
+		PaletteID paletteID;
 		CursorAlignment alignment;
 	public:
-		CursorData(const Texture *texture, CursorAlignment alignment);
+		CursorData(TextureBuilderID textureBuilderID, PaletteID paletteID, CursorAlignment alignment);
 
-		const Texture *getTexture() const;
+		TextureBuilderID getTextureBuilderID() const;
+		PaletteID getPaletteID() const;
 		CursorAlignment getAlignment() const;
 	};
 private:
@@ -47,19 +51,21 @@ protected:
 	// Generates a tooltip texture with the default white foreground and gray
 	// background with alpha blending.
 	static Texture createTooltip(const std::string &text,
-		FontName fontName, FontManager &fontManager, Renderer &renderer);
+		FontName fontName, FontLibrary &fontLibrary, Renderer &renderer);
 
 	Game &getGame() const;
+
+	// Default cursor used by most panels.
+	CursorData getDefaultCursor() const;
 public:
 	Panel(Game &game);
 	virtual ~Panel() = default;
 
 	static std::unique_ptr<Panel> defaultPanel(Game &game);
 
-	// Gets the panel's active mouse cursor and alignment. Override this method if
-	// the panel has at least one cursor defined. The texture must be supplied by 
-	// the texture manager.
-	virtual CursorData getCurrentCursor() const;
+	// Gets the panel's active mouse cursor and alignment, if any. Override this if the panel has at
+	// least one cursor defined.
+	virtual std::optional<CursorData> getCurrentCursor() const;
 
 	// Handles panel-specific events. Application events like closing and resizing
 	// are handled by the game loop.

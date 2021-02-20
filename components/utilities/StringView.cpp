@@ -1,4 +1,24 @@
+#include <cctype>
+
 #include "StringView.h"
+
+bool StringView::caseInsensitiveEquals(const std::string_view &a, const std::string_view &b)
+{
+	if (a.size() != b.size())
+	{
+		return false;
+	}
+
+	for (size_t i = 0; i < a.size(); i++)
+	{
+		if (std::tolower(a[i]) != std::tolower(b[i]))
+		{
+			return false;
+		}
+	}
+
+	return true;
+}
 
 std::string_view StringView::substr(const std::string_view &str, size_t offset, size_t count)
 {
@@ -35,17 +55,13 @@ std::vector<std::string_view> StringView::split(const std::string_view &str, cha
 
 std::vector<std::string_view> StringView::split(const std::string_view &str)
 {
-	return StringView::split(str, ' ');
+	return StringView::split(str, String::SPACE);
 }
 
 std::string_view StringView::trimFront(const std::string_view &str)
 {
-	const char space = ' ';
-	const char tab = '\t';
-
 	std::string_view trimmed(str);
-
-	while ((trimmed.front() == space) || (trimmed.front() == tab))
+	while ((trimmed.size() > 0) && std::isspace(trimmed.front()))
 	{
 		trimmed.remove_prefix(1);
 	}
@@ -55,12 +71,8 @@ std::string_view StringView::trimFront(const std::string_view &str)
 
 std::string_view StringView::trimBack(const std::string_view &str)
 {
-	const char space = ' ';
-	const char tab = '\t';
-
 	std::string_view trimmed(str);
-
-	while ((trimmed.back() == space) || (trimmed.back() == tab))
+	while ((trimmed.size() > 0) && std::isspace(trimmed.back()))
 	{
 		trimmed.remove_suffix(1);
 	}
@@ -70,7 +82,7 @@ std::string_view StringView::trimBack(const std::string_view &str)
 
 std::string_view StringView::getExtension(const std::string_view &str)
 {
-	const size_t dotPos = str.rfind('.');
+	const size_t dotPos = str.rfind(String::FILE_EXTENSION_SEPARATOR);
 	const bool hasDot = (dotPos < str.size()) && (dotPos != std::string_view::npos);
 	return hasDot ? std::string_view(
 		str.data() + dotPos + 1, str.size() - dotPos - 1) : std::string_view();

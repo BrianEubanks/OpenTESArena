@@ -6,19 +6,20 @@
 
 #include "Button.h"
 #include "Panel.h"
+#include "../Assets/ArenaTypes.h"
 #include "../World/VoxelDefinition.h"
 
 class Renderer;
 
+enum class MapType;
 enum class WeatherType;
-enum class WorldType;
 
 class MainMenuPanel : public Panel
 {
 private:
 	Button<Game&> loadButton, newButton;
 	Button<Game&, int, int, const std::string&,
-		const std::optional<VoxelDefinition::WallData::MenuType>&, WeatherType, WorldType> quickStartButton;
+		const std::optional<ArenaTypes::InteriorType>&, WeatherType, MapType> quickStartButton;
 	Button<> exitButton;
 	Button<MainMenuPanel&> testTypeUpButton, testTypeDownButton, testIndexUpButton,
 		testIndexDownButton, testIndex2UpButton, testIndex2DownButton, testWeatherUpButton,
@@ -26,14 +27,16 @@ private:
 	int testType, testIndex, testIndex2, testWeather; // Test values for quickstart.
 
 	std::string getSelectedTestName() const;
-	std::optional<VoxelDefinition::WallData::MenuType> getSelectedTestInteriorType() const;
+	std::optional<ArenaTypes::InteriorType> getSelectedTestInteriorType() const;
 	WeatherType getSelectedTestWeatherType() const;
-	WorldType getSelectedTestWorldType() const;
+	MapType getSelectedTestMapType() const;
+
+	void renderTestUI(Renderer &renderer);
 public:
 	MainMenuPanel(Game &game);
 	virtual ~MainMenuPanel() = default;
 
-	virtual Panel::CursorData getCurrentCursor() const override;
+	virtual std::optional<Panel::CursorData> getCurrentCursor() const override;
 	virtual void handleEvent(const SDL_Event &e) override;
 	virtual void render(Renderer &renderer) override;
 };

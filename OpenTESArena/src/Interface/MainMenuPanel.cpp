@@ -1,3 +1,5 @@
+#include <algorithm>
+#include <numeric>
 #include <unordered_map>
 #include <vector>
 
@@ -10,10 +12,14 @@
 #include "ImageSequencePanel.h"
 #include "LoadSavePanel.h"
 #include "MainMenuPanel.h"
+#include "Surface.h"
+#include "Texture.h"
+#include "../Assets/ArenaPaletteName.h"
+#include "../Assets/ArenaTextureName.h"
+#include "../Assets/ArenaTypes.h"
 #include "../Assets/CityDataFile.h"
 #include "../Assets/INFFile.h"
 #include "../Assets/MIFFile.h"
-#include "../Assets/MiscAssets.h"
 #include "../Assets/RMDFile.h"
 #include "../Game/Game.h"
 #include "../Game/GameData.h"
@@ -23,27 +29,20 @@
 #include "../Interface/TextAlignment.h"
 #include "../Interface/TextBox.h"
 #include "../Math/Random.h"
+#include "../Math/RandomUtils.h"
 #include "../Math/Vector2.h"
 #include "../Media/Color.h"
 #include "../Media/FontName.h"
-#include "../Media/MusicFile.h"
-#include "../Media/MusicName.h"
 #include "../Media/MusicUtils.h"
-#include "../Media/PaletteFile.h"
-#include "../Media/PaletteName.h"
-#include "../Media/TextureFile.h"
 #include "../Media/TextureManager.h"
-#include "../Media/TextureName.h"
-#include "../Media/TextureSequenceName.h"
+#include "../Rendering/ArenaRenderUtils.h"
 #include "../Rendering/Renderer.h"
-#include "../Rendering/Surface.h"
-#include "../Rendering/Texture.h"
-#include "../World/Location.h"
 #include "../World/LocationType.h"
 #include "../World/LocationUtils.h"
+#include "../World/MapType.h"
+#include "../World/SkyUtils.h"
 #include "../World/WeatherType.h"
 #include "../World/WeatherUtils.h"
-#include "../World/WorldType.h"
 
 #include "components/debug/Debug.h"
 #include "components/utilities/String.h"
@@ -57,50 +56,121 @@ namespace
 	const int TestType_Wilderness = 3;
 	const int TestType_Dungeon = 4;
 
-	const Rect TestButtonRect(135, Renderer::ORIGINAL_HEIGHT - 17, 30, 14);
+	const Rect TestButtonRect(135, ArenaRenderUtils::SCREEN_HEIGHT - 17, 30, 14);
 
 	// Main quest locations. There are eight map dungeons and eight staff dungeons.
 	// The special cases are the start dungeon and the final dungeon.
 	const int MainQuestLocationCount = 18;
-	const Location StartDungeonLocation = Location::makeSpecialCase(
-		Location::SpecialCaseType::StartDungeon, 8);
-	const Location FinalDungeonLocation = Location::makeCity(0, 8);
 
-	Location getMainQuestLocationFromIndex(const ExeData &exeData, int testIndex)
+	// Small hack for main menu testing.
+	enum class SpecialCaseType { None, StartDungeon };
+
+	void GetMainQuestLocationFromIndex(int testIndex, const ExeData &exeData,
+		int *outLocationID, int *outProvinceID, SpecialCaseType *outSpecialCaseType)
 	{
 		if (testIndex == 0)
 		{
-			return StartDungeonLocation;
+			*outLocationID = -1;
+			*outProvinceID = LocationUtils::CENTER_PROVINCE_ID;
+			*outSpecialCaseType = SpecialCaseType::StartDungeon;
 		}
 		else if (testIndex == (MainQuestLocationCount - 1))
 		{
-			return FinalDungeonLocation;
+			*outLocationID = 0;
+			*outProvinceID = LocationUtils::CENTER_PROVINCE_ID;
+			*outSpecialCaseType = SpecialCaseType::None;
 		}
 		else
 		{
 			// Generate the location from the executable data.
 			const auto &staffProvinces = exeData.locations.staffProvinces;
-			const int localDungeonID = testIndex % 2;
-			const int provinceID = staffProvinces.at((testIndex - 1) / 2);
-			return Location::makeDungeon(localDungeonID, provinceID);
+			const int staffProvincesIndex = (testIndex - 1) / 2;
+			DebugAssertIndex(staffProvinces, staffProvincesIndex);
+			*outProvinceID = staffProvinces[staffProvincesIndex];
+			*outLocationID = LocationUtils::dungeonToLocationID(testIndex % 2);
+			*outSpecialCaseType = SpecialCaseType::None;
 		}
+	}
+
+	std::vector<int> MakeShuffledLocationIndices(const ProvinceDefinition &provinceDef)
+	{
+		std::vector<int> indices(provinceDef.getLocationCount());
+		std::iota(indices.begin(), indices.end(), 0);
+		RandomUtils::shuffle(indices.data(), static_cast<int>(indices.size()));
+		return indices;
+	}
+
+	const LocationDefinition *GetRandomCityLocationDefinitionIfType(const ProvinceDefinition &provinceDef,
+		ArenaTypes::CityType cityType)
+	{
+		// Iterate over locations in the province in a random order.
+		const std::vector<int> randomLocationIndices = MakeShuffledLocationIndices(provinceDef);
+
+		for (const int locationIndex : randomLocationIndices)
+		{
+			const LocationDefinition &curLocationDef = provinceDef.getLocationDef(locationIndex);
+			if (curLocationDef.getType() == LocationDefinition::Type::City)
+			{
+				const auto &curCityDef = curLocationDef.getCityDefinition();
+				if (curCityDef.type == cityType)
+				{
+					return &curLocationDef;
+				}
+			}
+		}
+
+		return nullptr;
+	}
+
+	int GetRandomCityLocationIndex(const ProvinceDefinition &provinceDef)
+	{
+		// Iterate over locations in the province in a random order.
+		const std::vector<int> randomLocationIndices = MakeShuffledLocationIndices(provinceDef);
+
+		for (const int locationIndex : randomLocationIndices)
+		{
+			const LocationDefinition &curLocationDef = provinceDef.getLocationDef(locationIndex);
+			if (curLocationDef.getType() == LocationDefinition::Type::City)
+			{
+				return locationIndex;
+			}
+		}
+
+		return -1;
+	}
+
+	const LocationDefinition *GetRandomDungeonLocationDefinition(const ProvinceDefinition &provinceDef)
+	{
+		// Iterate over locations in the province in a random order.
+		const std::vector<int> randomLocationIndices = MakeShuffledLocationIndices(provinceDef);
+
+		for (const int locationIndex : randomLocationIndices)
+		{
+			const LocationDefinition &curLocationDef = provinceDef.getLocationDef(locationIndex);
+			if (curLocationDef.getType() == LocationDefinition::Type::Dungeon)
+			{
+				return &curLocationDef;
+			}
+		}
+
+		return nullptr;
 	}
 
 	// Prefixes for some .MIF files, with an inclusive min/max range of ID suffixes.
 	// These also need ".MIF" appended at the end.
-	const std::vector<std::tuple<std::string, std::pair<int, int>, VoxelDefinition::WallData::MenuType>> InteriorLocations =
+	const std::vector<std::tuple<std::string, std::pair<int, int>, ArenaTypes::InteriorType>> InteriorLocations =
 	{
-		{ "BS", { 1, 8 }, VoxelDefinition::WallData::MenuType::House },
-		{ "EQUIP", { 1, 8 }, VoxelDefinition::WallData::MenuType::Equipment },
-		{ "MAGE", { 1, 8 }, VoxelDefinition::WallData::MenuType::MagesGuild },
-		{ "NOBLE", { 1, 8 }, VoxelDefinition::WallData::MenuType::Noble },
-		{ "PALACE", { 1, 5 }, VoxelDefinition::WallData::MenuType::Palace },
-		{ "TAVERN", { 1, 8 }, VoxelDefinition::WallData::MenuType::Tavern },
-		{ "TEMPLE", { 1, 8 }, VoxelDefinition::WallData::MenuType::Temple },
-		{ "TOWER", { 1, 8 }, VoxelDefinition::WallData::MenuType::Tower },
-		{ "TOWNPAL", { 1, 3 }, VoxelDefinition::WallData::MenuType::Palace },
-		{ "VILPAL", { 1, 3 }, VoxelDefinition::WallData::MenuType::Palace },
-		{ "WCRYPT", { 1, 8 }, VoxelDefinition::WallData::MenuType::Crypt }
+		{ "BS", { 1, 8 }, ArenaTypes::InteriorType::House },
+		{ "EQUIP", { 1, 8 }, ArenaTypes::InteriorType::Equipment },
+		{ "MAGE", { 1, 8 }, ArenaTypes::InteriorType::MagesGuild },
+		{ "NOBLE", { 1, 8 }, ArenaTypes::InteriorType::Noble },
+		{ "PALACE", { 1, 5 }, ArenaTypes::InteriorType::Palace },
+		{ "TAVERN", { 1, 8 }, ArenaTypes::InteriorType::Tavern },
+		{ "TEMPLE", { 1, 8 }, ArenaTypes::InteriorType::Temple },
+		{ "TOWER", { 1, 8 }, ArenaTypes::InteriorType::Tower },
+		{ "TOWNPAL", { 1, 3 }, ArenaTypes::InteriorType::Palace },
+		{ "VILPAL", { 1, 3 }, ArenaTypes::InteriorType::Palace },
+		{ "WCRYPT", { 1, 8 }, ArenaTypes::InteriorType::Crypt }
 	};
 
 	const std::string ImperialMIF = "IMPERIAL.MIF";
@@ -179,8 +249,20 @@ MainMenuPanel::MainMenuPanel(Game &game)
 			// Link together the opening scroll, intro cinematic, and character creation.
 			auto changeToCharCreation = [](Game &game)
 			{
+				game.setCharacterCreationState(std::make_unique<CharacterCreationState>());
 				game.setPanel<ChooseClassCreationPanel>(game);
-				game.setMusic(MusicName::Sheet);
+
+				const MusicLibrary &musicLibrary = game.getMusicLibrary();
+				const MusicDefinition *musicDef = musicLibrary.getRandomMusicDefinition(
+					MusicDefinition::Type::CharacterCreation, game.getRandom());
+
+				if (musicDef == nullptr)
+				{
+					DebugLogWarning("Missing character creation music.");
+				}
+
+				AudioManager &audioManager = game.getAudioManager();
+				audioManager.setMusic(musicDef);
 			};
 
 			auto changeToNewGameStory = [changeToCharCreation](Game &game)
@@ -214,20 +296,36 @@ MainMenuPanel::MainMenuPanel(Game &game)
 
 			game.setPanel<CinematicPanel>(
 				game,
-				PaletteFile::fromName(PaletteName::Default),
-				TextureFile::fromName(TextureSequenceName::OpeningScroll),
+				ArenaTextureSequenceName::OpeningScroll,
+				ArenaTextureSequenceName::OpeningScroll,
 				1.0 / 24.0,
 				changeToNewGameStory);
-			game.setMusic(MusicName::EvilIntro);
+
+			const MusicLibrary &musicLibrary = game.getMusicLibrary();
+			const MusicDefinition *musicDef = musicLibrary.getRandomMusicDefinitionIf(
+				MusicDefinition::Type::Cinematic, game.getRandom(), [](const MusicDefinition &def)
+			{
+				DebugAssert(def.getType() == MusicDefinition::Type::Cinematic);
+				const auto &cinematicMusicDef = def.getCinematicMusicDefinition();
+				return cinematicMusicDef.type == MusicDefinition::CinematicMusicDefinition::Type::Intro;
+			});
+
+			if (musicDef == nullptr)
+			{
+				DebugLogWarning("Missing intro music.");
+			}
+
+			AudioManager &audioManager = game.getAudioManager();
+			audioManager.setMusic(musicDef);
 		};
+
 		return Button<Game&>(center, width, height, function);
 	}();
 
 	this->quickStartButton = [&game]()
 	{
 		auto function = [](Game &game, int testType, int testIndex, const std::string &mifName,
-			const std::optional<VoxelDefinition::WallData::MenuType> &optInteriorType,
-			WeatherType weatherType, WorldType worldType)
+			const std::optional<ArenaTypes::InteriorType> &optInteriorType, WeatherType weatherType, MapType mapType)
 		{
 			// Initialize 3D renderer.
 			auto &renderer = game.getRenderer();
@@ -238,71 +336,16 @@ MainMenuPanel::MainMenuPanel(Game &game)
 
 			// Game data instance, to be initialized further by one of the loading methods below.
 			// Create a player with random data for testing.
-			const auto &miscAssets = game.getMiscAssets();
+			const auto &binaryAssetLibrary = game.getBinaryAssetLibrary();
 			auto gameData = std::make_unique<GameData>(Player::makeRandom(
-				miscAssets.getClassDefinitions(), miscAssets.getExeData()), miscAssets);
+				game.getCharacterClassLibrary(), binaryAssetLibrary.getExeData(), game.getRandom()),
+				binaryAssetLibrary);
 
-			const int starCount = DistantSky::getStarCountFromDensity(
+			const int starCount = SkyUtils::getStarCountFromDensity(
 				options.getMisc_StarDensity());
 
-			Random random;
-
 			// Load the selected level based on world type (writing into active game data).
-			if (worldType == WorldType::City)
-			{
-				// There is only one "premade" city (used by the center province). All others
-				// are randomly generated.
-				if (mifName == ImperialMIF)
-				{
-					// Load city into game data.
-					const int localCityID = 0;
-					const int provinceID = LocationUtils::CENTER_PROVINCE_ID;
-					const WorldMapDefinition &worldMapDef = miscAssets.getWorldMapDefinition();
-					const ProvinceDefinition &provinceDef = worldMapDef.getProvinceDef(provinceID);
-					const LocationDefinition &locationDef = provinceDef.getLocationDef(localCityID);
-					gameData->loadCity(localCityID, provinceID, locationDef, provinceDef,
-						weatherType, starCount, miscAssets, game.getTextureManager(), renderer);
-				}
-				else
-				{
-					// Pick a random location based on the .MIF name, excluding the
-					// center province.
-					const int localCityID = [&mifName, &random]()
-					{
-						if (mifName == RandomCity)
-						{
-							return random.next(8);
-						}
-						else if (mifName == RandomTown)
-						{
-							return 8 + random.next(8);
-						}
-						else if (mifName == RandomVillage)
-						{
-							return 16 + random.next(16);
-						}
-						else
-						{
-							throw DebugException("Bad .MIF name \"" + mifName + "\".");
-						}
-					}();
-
-					const int provinceID = random.next(8);
-					const WorldMapDefinition &worldMapDef = miscAssets.getWorldMapDefinition();
-					const ProvinceDefinition &provinceDef = worldMapDef.getProvinceDef(provinceID);
-					const LocationDefinition &locationDef = provinceDef.getLocationDef(localCityID);
-
-					const ClimateType climateType = LocationUtils::getCityClimateType(
-						localCityID, provinceID, miscAssets);
-					const WeatherType filteredWeatherType =
-						WeatherUtils::getFilteredWeatherType(weatherType, climateType);
-
-					// Load city into game data. Location data is loaded, too.
-					gameData->loadCity(localCityID, provinceID, locationDef, provinceDef,
-						filteredWeatherType, starCount, miscAssets, game.getTextureManager(), renderer);
-				}
-			}
-			else if (worldType == WorldType::Interior)
+			if (mapType == MapType::Interior)
 			{
 				if (testType != TestType_Dungeon)
 				{
@@ -313,57 +356,96 @@ MainMenuPanel::MainMenuPanel(Game &game)
 					}
 
 					const Player &player = gameData->getPlayer();
+					const WorldMapDefinition &worldMapDef = gameData->getWorldMapDefinition();
 
-					// Set some interior location data for testing, depending on whether
-					// it's a main quest dungeon.
-					const Location location = [&game, &player, testType, testIndex, &random]()
+					// Set some interior location data for testing, depending on whether it's a
+					// main quest dungeon.
+					int locationIndex, provinceIndex;
+					if (testType == TestType_MainQuest)
 					{
-						if (testType == TestType_MainQuest)
+						// Fetch from a global function.
+						const auto &exeData = game.getBinaryAssetLibrary().getExeData();
+						SpecialCaseType specialCaseType;
+						GetMainQuestLocationFromIndex(testIndex, exeData, &locationIndex, &provinceIndex, &specialCaseType);
+
+						if (specialCaseType == SpecialCaseType::None)
 						{
-							// Fetch from a global function.
-							const auto &exeData = game.getMiscAssets().getExeData();
-							return getMainQuestLocationFromIndex(exeData, testIndex);
+							// Do nothing.
+						}
+						else if (specialCaseType == SpecialCaseType::StartDungeon)
+						{
+							// @temp: hacky search for start dungeon location definition.
+							const ProvinceDefinition &tempProvinceDef = worldMapDef.getProvinceDef(provinceIndex);
+							for (int i = 0; i < tempProvinceDef.getLocationCount(); i++)
+							{
+								const LocationDefinition &curLocationDef = tempProvinceDef.getLocationDef(i);
+								if (curLocationDef.getType() == LocationDefinition::Type::MainQuestDungeon)
+								{
+									const LocationDefinition::MainQuestDungeonDefinition &mainQuestDungeonDef =
+										curLocationDef.getMainQuestDungeonDefinition();
+
+									if (mainQuestDungeonDef.type == LocationDefinition::MainQuestDungeonDefinition::Type::Start)
+									{
+										locationIndex = i;
+										break;
+									}
+								}
+							}
+
+							DebugAssertMsg(locationIndex != -1, "Couldn't find start dungeon location definition.");
 						}
 						else
 						{
-							const int localCityID = random.next(32);
-							const int provinceID = random.next(8);
-							return Location::makeCity(localCityID, provinceID);
+							DebugNotImplementedMsg(std::to_string(static_cast<int>(specialCaseType)));
 						}
-					}();
+					}
+					else
+					{
+						// Any province besides center province.
+						// @temp: mildly disorganized
+						provinceIndex = game.getRandom().next(worldMapDef.getProvinceCount() - 1);
+						locationIndex = GetRandomCityLocationIndex(worldMapDef.getProvinceDef(provinceIndex));
+					}
+
+					const ProvinceDefinition &provinceDef = worldMapDef.getProvinceDef(provinceIndex);
+					const LocationDefinition &locationDef = provinceDef.getLocationDef(locationIndex);
 
 					DebugAssert(optInteriorType.has_value());
-					const VoxelDefinition::WallData::MenuType interiorType = *optInteriorType;
-					gameData->loadInterior(interiorType, mif, location, miscAssets,
-						game.getTextureManager(), renderer);
+					const ArenaTypes::InteriorType interiorType = *optInteriorType;
+					if (!gameData->loadInterior(locationDef, provinceDef, interiorType, mif,
+						game.getEntityDefinitionLibrary(), game.getCharacterClassLibrary(),
+						binaryAssetLibrary, game.getRandom(), game.getTextureManager(), renderer))
+					{
+						DebugCrash("Couldn't load interior \"" + locationDef.getName() + "\".");
+					}
 				}
 				else
 				{
 					// Pick a random dungeon based on the dungeon type.
-					const int provinceID = random.next(8);
-					const bool isArtifactDungeon = false;
-					DebugAssert(optInteriorType.has_value());
-					const VoxelDefinition::WallData::MenuType interiorType = *optInteriorType;
+					const WorldMapDefinition &worldMapDef = gameData->getWorldMapDefinition();
+					const ProvinceDefinition &provinceDef = [&game, &worldMapDef]()
+					{
+						const int provinceIndex = game.getRandom().next(worldMapDef.getProvinceCount() - 1);
+						return worldMapDef.getProvinceDef(provinceIndex);
+					}();
+
+					constexpr bool isArtifactDungeon = false;
 
 					if (mifName == RandomNamedDungeon)
 					{
-						const int provinceIndex = provinceID;
+						const LocationDefinition *locationDefPtr = GetRandomDungeonLocationDefinition(provinceDef);
+						DebugAssertMsg(locationDefPtr != nullptr,
+							"Couldn't find named dungeon in \"" + provinceDef.getName() + "\".");
 
-						const int localDungeonID = 2 + random.next(14);
-						const int locationIndex = LocationUtils::dungeonToLocationID(localDungeonID);
-
-						const WorldMapDefinition &worldMapDef = miscAssets.getWorldMapDefinition();
-						const ProvinceDefinition &provinceDef = worldMapDef.getProvinceDef(provinceIndex);
-						const LocationDefinition &locationDef = provinceDef.getLocationDef(locationIndex);
-
-						gameData->loadNamedDungeon(localDungeonID, provinceID, locationDef,
-							provinceDef, isArtifactDungeon, interiorType, miscAssets,
-							game.getTextureManager(), renderer);
+						if (!gameData->loadNamedDungeon(*locationDefPtr, provinceDef, isArtifactDungeon,
+							game.getEntityDefinitionLibrary(), game.getCharacterClassLibrary(),
+							binaryAssetLibrary, game.getRandom(), game.getTextureManager(), renderer))
+						{
+							DebugCrash("Couldn't load named dungeon \"" + locationDefPtr->getName() + "\".");
+						}
 
 						// Set random named dungeon name and visibility for testing.
-						WorldMapInstance &worldMapInst = gameData->getWorldMapInstance();
-						ProvinceInstance &provinceInst = worldMapInst.getProvinceInstance(provinceIndex);
-						LocationInstance &locationInst = provinceInst.getLocationInstance(locationIndex);
+						LocationInstance &locationInst = gameData->getLocationInstance();
 						locationInst.setNameOverride("Test Dungeon");
 
 						if (!locationInst.isVisible())
@@ -373,17 +455,20 @@ MainMenuPanel::MainMenuPanel(Game &game)
 					}
 					else if (mifName == RandomWildDungeon)
 					{
+						Random &random = game.getRandom();
 						const int wildBlockX = random.next(RMDFile::WIDTH);
 						const int wildBlockY = random.next(RMDFile::DEPTH);
 
-						const int localCityID = random.next(32);
-						const WorldMapDefinition &worldMapDef = miscAssets.getWorldMapDefinition();
-						const ProvinceDefinition &provinceDef = worldMapDef.getProvinceDef(provinceID);
-						const LocationDefinition &locationDef = provinceDef.getLocationDef(localCityID);
+						const int locationIndex = GetRandomCityLocationIndex(provinceDef);
+						const LocationDefinition &locationDef = provinceDef.getLocationDef(locationIndex);
 
-						gameData->loadWildernessDungeon(provinceID, locationDef, wildBlockX,
-							wildBlockY, interiorType, miscAssets.getCityDataFile(), miscAssets,
-							game.getTextureManager(), renderer);
+						if (!gameData->loadWildernessDungeon(locationDef, provinceDef, wildBlockX, wildBlockY,
+							binaryAssetLibrary.getCityDataFile(), game.getEntityDefinitionLibrary(),
+							game.getCharacterClassLibrary(), binaryAssetLibrary, game.getRandom(),
+							game.getTextureManager(), renderer))
+						{
+							DebugCrash("Couldn't load wilderness dungeon \"" + locationDef.getName() + "\".");
+						}
 					}
 					else
 					{
@@ -391,30 +476,124 @@ MainMenuPanel::MainMenuPanel(Game &game)
 					}
 				}
 			}
-			else if (worldType == WorldType::Wilderness)
+			else if (mapType == MapType::City)
+			{
+				// There is only one "premade" city (used by the center province). All others
+				// are randomly generated.
+				if (mifName == ImperialMIF)
+				{
+					// Load city into game data.
+					const int provinceIndex = LocationUtils::CENTER_PROVINCE_ID;
+					const WorldMapDefinition &worldMapDef = gameData->getWorldMapDefinition();
+					const ProvinceDefinition &provinceDef = worldMapDef.getProvinceDef(provinceIndex);
+					const LocationDefinition &locationDef = [&mifName, &provinceDef]()
+					{
+						int locationIndex = -1;
+						for (int i = 0; i < provinceDef.getLocationCount(); i++)
+						{
+							const LocationDefinition &curLocationDef = provinceDef.getLocationDef(i);
+							if (curLocationDef.getType() == LocationDefinition::Type::City)
+							{
+								const LocationDefinition::CityDefinition &cityDef = curLocationDef.getCityDefinition();
+								if ((cityDef.type == ArenaTypes::CityType::CityState) && cityDef.premade &&
+									cityDef.palaceIsMainQuestDungeon)
+								{
+									locationIndex = i;
+									break;
+								}
+							}
+						}
+
+						DebugAssertMsg(locationIndex != -1, "Couldn't find location for \"" + mifName + "\".");
+						return provinceDef.getLocationDef(locationIndex);
+					}();
+
+					if (!gameData->loadCity(locationDef, provinceDef, weatherType, starCount,
+						game.getEntityDefinitionLibrary(), game.getCharacterClassLibrary(),
+						binaryAssetLibrary, game.getTextAssetLibrary(), game.getRandom(),
+						game.getTextureManager(), renderer))
+					{
+						DebugCrash("Couldn't load city \"" + locationDef.getName() + "\".");
+					}
+				}
+				else
+				{
+					// Pick a random location based on the .MIF name, excluding the center province.
+					const WorldMapDefinition &worldMapDef = gameData->getWorldMapDefinition();
+					const ProvinceDefinition &provinceDef = [&game, &worldMapDef]()
+					{
+						const int provinceIndex = game.getRandom().next(worldMapDef.getProvinceCount() - 1);
+						return worldMapDef.getProvinceDef(provinceIndex);
+					}();
+
+					const ArenaTypes::CityType targetCityType = [&mifName]()
+					{
+						if (mifName == RandomCity)
+						{
+							return ArenaTypes::CityType::CityState;
+						}
+						else if (mifName == RandomTown)
+						{
+							return ArenaTypes::CityType::Town;
+						}
+						else if (mifName == RandomVillage)
+						{
+							return ArenaTypes::CityType::Village;
+						}
+						else
+						{
+							DebugUnhandledReturnMsg(ArenaTypes::CityType, mifName);
+						}
+					}();
+
+					const LocationDefinition *locationDefPtr = GetRandomCityLocationDefinitionIfType(provinceDef, targetCityType);
+					DebugAssertMsg(locationDefPtr != nullptr, "Couldn't find city for \"" + mifName + "\".");
+
+					const LocationDefinition::CityDefinition &cityDef = locationDefPtr->getCityDefinition();
+					const WeatherType filteredWeatherType =
+						WeatherUtils::getFilteredWeatherType(weatherType, cityDef.climateType);
+
+					// Load city into game data. Location data is loaded, too.
+					if (!gameData->loadCity(*locationDefPtr, provinceDef, filteredWeatherType, starCount,
+						game.getEntityDefinitionLibrary(), game.getCharacterClassLibrary(),
+						binaryAssetLibrary, game.getTextAssetLibrary(), game.getRandom(),
+						game.getTextureManager(), renderer))
+					{
+						DebugCrash("Couldn't load city \"" + locationDefPtr->getName() + "\".");
+					}
+				}
+			}
+			else if (mapType == MapType::Wilderness)
 			{
 				// Pick a random location and province.
-				const int localCityID = random.next(32);
-				const int provinceID = random.next(8);
-				const WorldMapDefinition &worldMapDef = miscAssets.getWorldMapDefinition();
-				const ProvinceDefinition &provinceDef = worldMapDef.getProvinceDef(provinceID);
-				const LocationDefinition &locationDef = provinceDef.getLocationDef(localCityID);
+				const WorldMapDefinition &worldMapDef = gameData->getWorldMapDefinition();
+				const ProvinceDefinition &provinceDef = [&game, &worldMapDef]()
+				{
+					const int provinceIndex = game.getRandom().next(worldMapDef.getProvinceCount() - 1);
+					return worldMapDef.getProvinceDef(provinceIndex);
+				}();
 
-				const ClimateType climateType = LocationUtils::getCityClimateType(
-					localCityID, provinceID, miscAssets);
+				const int locationIndex = GetRandomCityLocationIndex(provinceDef);
+				const LocationDefinition &locationDef = provinceDef.getLocationDef(locationIndex);
+
+				const LocationDefinition::CityDefinition &cityDef = locationDef.getCityDefinition();
 				const WeatherType filteredWeatherType =
-					WeatherUtils::getFilteredWeatherType(weatherType, climateType);
+					WeatherUtils::getFilteredWeatherType(weatherType, cityDef.climateType);
 
 				// Load wilderness into game data. Location data is loaded, too.
 				const bool ignoreGatePos = true;
-				gameData->loadWilderness(localCityID, provinceID, locationDef, provinceDef,
-					Int2(), Int2(), ignoreGatePos, filteredWeatherType, starCount, miscAssets,
-					game.getTextureManager(), renderer);
+				if (!gameData->loadWilderness(locationDef, provinceDef, Int2(), Int2(), ignoreGatePos,
+					filteredWeatherType, starCount, game.getEntityDefinitionLibrary(),
+					game.getCharacterClassLibrary(), binaryAssetLibrary, game.getRandom(),
+					game.getTextureManager(), renderer))
+				{
+					DebugCrash("Couldn't load wilderness \"" + locationDef.getName() + "\".");
+				}
 			}
 			else
 			{
 				DebugCrash("Unrecognized world type \"" + 
-					std::to_string(static_cast<int>(worldType)) + "\".");
+					std::to_string(static_cast<int>(mapType)) + "\".");
 			}
 
 			// Set clock to 5:45am.
@@ -422,36 +601,100 @@ MainMenuPanel::MainMenuPanel(Game &game)
 			clock = Clock(5, 45, 0);
 
 			// Get the music that should be active on start.
-			const MusicName musicName = [&mifName, worldType, &gameData, &random, &clock]()
+			const MusicLibrary &musicLibrary = game.getMusicLibrary();
+			const MusicDefinition *musicDef = [&game, &mifName, mapType, &gameData, &musicLibrary]()
 			{
-				const bool isExterior = (worldType == WorldType::City) ||
-					(worldType == WorldType::Wilderness);
+				const bool isExterior = (mapType == MapType::City) ||
+					(mapType == MapType::Wilderness);
 
 				// Exteriors depend on the time of day for which music to use. Interiors depend
 				// on the current location's .MIF name (if any).
 				if (isExterior)
 				{
-					// Make sure to get updated weather type from game data and not
-					// local variable so it gets the filtered weather type.
+					// Make sure to get updated weather type from game data and not local variable
+					// so it gets the filtered weather type.
 					const WeatherType weatherType = gameData->getWeatherType();
-					return gameData->nightMusicIsActive() ?
-						MusicName::Night : MusicUtils::getExteriorMusicName(weatherType);
+					if (!gameData->nightMusicIsActive())
+					{
+						return musicLibrary.getRandomMusicDefinitionIf(MusicDefinition::Type::Weather,
+							game.getRandom(), [weatherType](const MusicDefinition &def)
+						{
+							DebugAssert(def.getType() == MusicDefinition::Type::Weather);
+							const auto &weatherMusicDef = def.getWeatherMusicDefinition();
+							return weatherMusicDef.type == weatherType;
+						});
+					}
+					else
+					{
+						return musicLibrary.getRandomMusicDefinition(
+							MusicDefinition::Type::Night, game.getRandom());
+					}
 				}
 				else
 				{
-					return MusicUtils::getInteriorMusicName(mifName, random);
+					MusicDefinition::InteriorMusicDefinition::Type interiorMusicType;
+					if (MusicUtils::tryGetInteriorMusicType(mifName, &interiorMusicType))
+					{
+						// Non-dungeon interior.
+						return musicLibrary.getRandomMusicDefinitionIf(MusicDefinition::Type::Interior,
+							game.getRandom(), [interiorMusicType](const MusicDefinition &def)
+						{
+							DebugAssert(def.getType() == MusicDefinition::Type::Interior);
+							const auto &interiorMusicDef = def.getInteriorMusicDefinition();
+							return interiorMusicDef.type == interiorMusicType;
+						});
+					}
+					else
+					{
+						// Dungeon.
+						return musicLibrary.getRandomMusicDefinition(
+							MusicDefinition::Type::Dungeon, game.getRandom());
+					}
 				}
 			}();
+
+			const MusicDefinition *jingleMusicDef = [&game, mapType, &gameData, &musicLibrary]()
+				-> const MusicDefinition*
+			{
+				const LocationDefinition &locationDef = gameData->getLocationDefinition();
+				const bool isCity = (mapType == MapType::City) &&
+					(locationDef.getType() == LocationDefinition::Type::City);
+
+				if (isCity)
+				{
+					const LocationDefinition::CityDefinition &cityDef = locationDef.getCityDefinition();
+					return musicLibrary.getRandomMusicDefinitionIf(MusicDefinition::Type::Jingle,
+						game.getRandom(), [&cityDef](const MusicDefinition &def)
+					{
+						DebugAssert(def.getType() == MusicDefinition::Type::Jingle);
+						const auto &jingleMusicDef = def.getJingleMusicDefinition();
+						return (jingleMusicDef.cityType == cityDef.type) &&
+							(jingleMusicDef.climateType == cityDef.climateType);
+					});
+				}
+				else
+				{
+					return nullptr;
+				}
+			}();
+
+			if (musicDef == nullptr)
+			{
+				DebugLogWarning("Missing start music.");
+			}
 
 			// Set the game data before constructing the game world panel.
 			game.setGameData(std::move(gameData));
 
 			// Initialize game world panel.
 			game.setPanel<GameWorldPanel>(game);
-			game.setMusic(musicName);
+
+			AudioManager &audioManager = game.getAudioManager();
+			audioManager.setMusic(musicDef, jingleMusicDef);
 		};
+
 		return Button<Game&, int, int, const std::string&,
-			const std::optional<VoxelDefinition::WallData::MenuType>&, WeatherType, WorldType>(function);
+			const std::optional<ArenaTypes::InteriorType>&, WeatherType, MapType>(function);
 	}();
 
 	this->exitButton = []()
@@ -689,8 +932,8 @@ std::string MainMenuPanel::getSelectedTestName() const
 	if (this->testType == TestType_MainQuest)
 	{
 		auto &game = this->getGame();
-		const auto &miscAssets = game.getMiscAssets();
-		const auto &exeData = miscAssets.getExeData();
+		const auto &binaryAssetLibrary = game.getBinaryAssetLibrary();
+		const auto &exeData = binaryAssetLibrary.getExeData();
 
 		// Decide how to get the main quest dungeon name.
 		if (this->testIndex == 0)
@@ -707,19 +950,22 @@ std::string MainMenuPanel::getSelectedTestName() const
 		{
 			// Generate the location from the executable data, fetching data from a
 			// global function.
-			const Location location = getMainQuestLocationFromIndex(exeData, this->testIndex);
+			int locationID, provinceID;
+			SpecialCaseType specialCaseType;
+			GetMainQuestLocationFromIndex(this->testIndex, exeData, &locationID, &provinceID, &specialCaseType);
+			DebugAssert(specialCaseType == SpecialCaseType::None);
 
 			// Calculate the .MIF name from the dungeon seed.
-			const auto &cityData = miscAssets.getCityDataFile();
-			const uint32_t dungeonSeed = [&location, &cityData]()
+			const auto &cityData = binaryAssetLibrary.getCityDataFile();
+			const uint32_t dungeonSeed = [&cityData, locationID, provinceID]()
 			{
-				const auto &province = cityData.getProvinceData(location.provinceID);
-				return LocationUtils::getDungeonSeed(
-					location.localDungeonID, location.provinceID, province);
+				const auto &province = cityData.getProvinceData(provinceID);
+				const int localDungeonID = locationID - 32;
+				return LocationUtils::getDungeonSeed(localDungeonID, provinceID, province);
 			}();
 
 			const std::string mifName = LocationUtils::getMainQuestDungeonMifName(dungeonSeed);
-			return mifName;
+			return String::toUppercase(mifName);
 		}
 	}
 	else if (this->testType == TestType_Interior)
@@ -741,11 +987,11 @@ std::string MainMenuPanel::getSelectedTestName() const
 	}
 }
 
-std::optional<VoxelDefinition::WallData::MenuType> MainMenuPanel::getSelectedTestInteriorType() const
+std::optional<ArenaTypes::InteriorType> MainMenuPanel::getSelectedTestInteriorType() const
 {
 	if (this->testType == TestType_MainQuest || this->testType == TestType_Dungeon)
 	{
-		return VoxelDefinition::WallData::MenuType::Dungeon;
+		return ArenaTypes::InteriorType::Dungeon;
 	}
 	else if (this->testType == TestType_Interior)
 	{
@@ -768,33 +1014,27 @@ WeatherType MainMenuPanel::getSelectedTestWeatherType() const
 	return Weathers.at(this->testWeather);
 }
 
-WorldType MainMenuPanel::getSelectedTestWorldType() const
+MapType MainMenuPanel::getSelectedTestMapType() const
 {
 	if ((this->testType == TestType_MainQuest) ||
 		(this->testType == TestType_Interior) ||
 		(this->testType == TestType_Dungeon))
 	{
-		return WorldType::Interior;
+		return MapType::Interior;
 	}
 	else if (this->testType == TestType_City)
 	{
-		return WorldType::City;
+		return MapType::City;
 	}
 	else
 	{
-		return WorldType::Wilderness;
+		return MapType::Wilderness;
 	}
 }
 
-Panel::CursorData MainMenuPanel::getCurrentCursor() const
+std::optional<Panel::CursorData> MainMenuPanel::getCurrentCursor() const
 {
-	auto &game = this->getGame();
-	auto &renderer = game.getRenderer();
-	auto &textureManager = game.getTextureManager();
-	const auto &texture = textureManager.getTexture(
-		TextureFile::fromName(TextureName::SwordCursor),
-		PaletteFile::fromName(PaletteName::Default), renderer);
-	return CursorData(&texture, CursorAlignment::TopLeft);
+	return this->getDefaultCursor();
 }
 
 void MainMenuPanel::handleEvent(const SDL_Event &e)
@@ -827,7 +1067,7 @@ void MainMenuPanel::handleEvent(const SDL_Event &e)
 			this->getSelectedTestName(),
 			this->getSelectedTestInteriorType(),
 			this->getSelectedTestWeatherType(),
-			this->getSelectedTestWorldType());
+			this->getSelectedTestMapType());
 	}
 
 	bool leftClick = inputManager.mouseButtonPressed(e, SDL_BUTTON_LEFT);
@@ -860,7 +1100,7 @@ void MainMenuPanel::handleEvent(const SDL_Event &e)
 				this->getSelectedTestName(),
 				this->getSelectedTestInteriorType(),
 				this->getSelectedTestWeatherType(),
-				this->getSelectedTestWorldType());
+				this->getSelectedTestMapType());
 		}
 		else if (this->testTypeUpButton.contains(originalPoint))
 		{
@@ -917,60 +1157,61 @@ void MainMenuPanel::handleEvent(const SDL_Event &e)
 	}
 }
 
-void MainMenuPanel::render(Renderer &renderer)
+void MainMenuPanel::renderTestUI(Renderer &renderer)
 {
-	// Clear full screen.
-	renderer.clear();
-
-	// Set palette.
-	auto &textureManager = this->getGame().getTextureManager();
-	textureManager.setPalette(PaletteFile::fromName(PaletteName::Default));
-
-	// Draw main menu.
-	const auto &mainMenu = textureManager.getTexture(
-		TextureFile::fromName(TextureName::MainMenu),
-		PaletteFile::fromName(PaletteName::BuiltIn), renderer);
-	renderer.drawOriginal(mainMenu);
-
 	// Draw test buttons.
-	const auto &arrows = textureManager.getTexture(
-		TextureFile::fromName(TextureName::UpDown),
-		PaletteFile::fromName(PaletteName::CharSheet), renderer);
-	renderer.drawOriginal(arrows, this->testTypeUpButton.getX(),
-		this->testTypeUpButton.getY());
-	renderer.drawOriginal(arrows, this->testIndexUpButton.getX(),
-		this->testIndexUpButton.getY());
+	auto &textureManager = this->getGame().getTextureManager();
+	const std::string &arrowsPaletteFilename = ArenaPaletteName::CharSheet;
+	const std::optional<PaletteID> arrowsPaletteID = textureManager.tryGetPaletteID(arrowsPaletteFilename.c_str());
+	if (!arrowsPaletteID.has_value())
+	{
+		DebugLogError("Couldn't get arrows palette ID for \"" + arrowsPaletteFilename + "\".");
+		return;
+	}
+
+	const std::string &arrowsTextureFilename = ArenaTextureName::UpDown;
+	const std::optional<TextureBuilderID> arrowsTextureBuilderID =
+		textureManager.tryGetTextureBuilderID(arrowsTextureFilename.c_str());
+	if (!arrowsTextureBuilderID.has_value())
+	{
+		DebugLogError("Couldn't get arrows texture builder ID for \"" + arrowsTextureFilename + "\".");
+		return;
+	}
+
+	renderer.drawOriginal(*arrowsTextureBuilderID, *arrowsPaletteID,
+		this->testTypeUpButton.getX(), this->testTypeUpButton.getY(), textureManager);
+	renderer.drawOriginal(*arrowsTextureBuilderID, *arrowsPaletteID,
+		this->testIndexUpButton.getX(), this->testIndexUpButton.getY(), textureManager);
 
 	if (this->testType == TestType_Interior)
 	{
-		renderer.drawOriginal(arrows, this->testIndex2UpButton.getX(),
-			this->testIndex2UpButton.getY());
+		renderer.drawOriginal(*arrowsTextureBuilderID, *arrowsPaletteID,
+			this->testIndex2UpButton.getX(), this->testIndex2UpButton.getY(), textureManager);
 	}
 	else if ((this->testType == TestType_City) || (this->testType == TestType_Wilderness))
 	{
-		renderer.drawOriginal(arrows, this->testWeatherUpButton.getX(),
-			this->testWeatherUpButton.getY());
+		renderer.drawOriginal(*arrowsTextureBuilderID, *arrowsPaletteID,
+			this->testWeatherUpButton.getX(), this->testWeatherUpButton.getY(), textureManager);
 	}
 
-	const Texture testButton = Texture::generate(
-		Texture::PatternType::Custom1, TestButtonRect.getWidth(), 
-		TestButtonRect.getHeight(), textureManager, renderer);
-	renderer.drawOriginal(testButton, 
-		TestButtonRect.getLeft(), TestButtonRect.getTop(),
+	const Texture testButton = TextureUtils::generate(TextureUtils::PatternType::Custom1,
+		TestButtonRect.getWidth(), TestButtonRect.getHeight(), textureManager, renderer);
+	renderer.drawOriginal(testButton, TestButtonRect.getLeft(), TestButtonRect.getTop(),
 		testButton.getWidth(), testButton.getHeight());
 
 	// Draw test text.
+	const auto &fontLibrary = this->getGame().getFontLibrary();
 	const RichTextString testButtonText(
 		"Test",
 		FontName::Arena,
 		Color::White,
 		TextAlignment::Center,
-		this->getGame().getFontManager());
+		fontLibrary);
 
 	const Int2 testButtonTextBoxPoint(
 		TestButtonRect.getLeft() + (TestButtonRect.getWidth() / 2),
 		TestButtonRect.getTop() + (TestButtonRect.getHeight() / 2));
-	const TextBox testButtonTextBox(testButtonTextBoxPoint, testButtonText, renderer);
+	const TextBox testButtonTextBox(testButtonTextBoxPoint, testButtonText, fontLibrary, renderer);
 
 	renderer.drawOriginal(testButtonTextBox.getTexture(),
 		testButtonTextBox.getX(), testButtonTextBox.getY());
@@ -1004,13 +1245,14 @@ void MainMenuPanel::render(Renderer &renderer)
 		testButtonText.getFontName(),
 		testButtonText.getColor(),
 		TextAlignment::Left,
-		this->getGame().getFontManager());
+		fontLibrary);
 
 	const int testTypeTextBoxX = this->testTypeUpButton.getX() -
 		testTypeText.getDimensions().x - 2;
 	const int testTypeTextBoxY = this->testTypeUpButton.getY() +
 		(testTypeText.getDimensions().y / 2);
-	const TextBox testTypeTextBox(testTypeTextBoxX, testTypeTextBoxY, testTypeText, renderer);
+	const TextBox testTypeTextBox(testTypeTextBoxX, testTypeTextBoxY,
+		testTypeText, fontLibrary, renderer);
 
 	renderer.drawOriginal(testTypeTextBox.getTexture(),
 		testTypeTextBox.getX(), testTypeTextBox.getY());
@@ -1020,12 +1262,13 @@ void MainMenuPanel::render(Renderer &renderer)
 		testTypeText.getFontName(),
 		testTypeText.getColor(),
 		testTypeText.getAlignment(),
-		this->getGame().getFontManager());
+		fontLibrary);
 	const int testNameTextBoxX = this->testIndexUpButton.getX() -
 		testNameText.getDimensions().x - 2;
 	const int testNameTextBoxY = this->testIndexUpButton.getY() +
 		(testNameText.getDimensions().y / 2);
-	const TextBox testNameTextBox(testNameTextBoxX, testNameTextBoxY, testNameText, renderer);
+	const TextBox testNameTextBox(testNameTextBoxX, testNameTextBoxY,
+		testNameText, fontLibrary, renderer);
 	renderer.drawOriginal(testNameTextBox.getTexture(),
 		testNameTextBox.getX(), testNameTextBox.getY());
 
@@ -1040,16 +1283,44 @@ void MainMenuPanel::render(Renderer &renderer)
 			testTypeText.getFontName(),
 			testTypeText.getColor(),
 			testTypeText.getAlignment(),
-			this->getGame().getFontManager());
+			fontLibrary);
 
 		const int testWeatherTextBoxX = this->testWeatherUpButton.getX() -
 			testWeatherText.getDimensions().x - 2;
 		const int testWeatherTextBoxY = this->testWeatherUpButton.getY() +
 			(testWeatherText.getDimensions().y / 2);
-		const TextBox testWeatherTextBox(
-			testWeatherTextBoxX, testWeatherTextBoxY, testWeatherText, renderer);
+		const TextBox testWeatherTextBox(testWeatherTextBoxX, testWeatherTextBoxY,
+			testWeatherText, fontLibrary, renderer);
 
 		renderer.drawOriginal(testWeatherTextBox.getTexture(),
 			testWeatherTextBox.getX(), testWeatherTextBox.getY());
 	}
+}
+
+void MainMenuPanel::render(Renderer &renderer)
+{
+	// Clear full screen.
+	renderer.clear();
+
+	// Draw main menu.
+	auto &textureManager = this->getGame().getTextureManager();
+	const std::string &mainMenuTextureFilename = ArenaTextureName::MainMenu;
+	const std::string &mainMenuPaletteFilename = mainMenuTextureFilename;
+	const std::optional<PaletteID> mainMenuPaletteID = textureManager.tryGetPaletteID(mainMenuPaletteFilename.c_str());
+	if (!mainMenuPaletteID.has_value())
+	{
+		DebugLogError("Couldn't get main menu palette ID for \"" + mainMenuPaletteFilename + "\".");
+		return;
+	}
+
+	const std::optional<TextureBuilderID> mainMenuTextureBuilderID =
+		textureManager.tryGetTextureBuilderID(mainMenuTextureFilename.c_str());
+	if (!mainMenuTextureBuilderID.has_value())
+	{
+		DebugLogError("Couldn't get main menu texture builder ID for \"" + mainMenuTextureFilename + "\".");
+		return;
+	}
+
+	renderer.drawOriginal(*mainMenuTextureBuilderID, *mainMenuPaletteID, textureManager);
+	this->renderTestUI(renderer);
 }

@@ -2,70 +2,78 @@
 #include <functional>
 #include <optional>
 
+#include "ArenaCityUtils.h"
+#include "ArenaInteriorUtils.h"
+#include "ArenaLevelUtils.h"
+#include "ArenaVoxelUtils.h"
+#include "ArenaWildUtils.h"
+#include "ChunkUtils.h"
 #include "LevelData.h"
-#include "VoxelDataType.h"
+#include "LocationUtils.h"
+#include "MapType.h"
+#include "ProvinceDefinition.h"
 #include "VoxelDefinition.h"
+#include "VoxelFacing2D.h"
+#include "WorldData.h"
 #include "../Assets/ArenaAnimUtils.h"
+#include "../Assets/ArenaPaletteName.h"
+#include "../Assets/ArenaTypes.h"
+#include "../Assets/BinaryAssetLibrary.h"
 #include "../Assets/CFAFile.h"
 #include "../Assets/COLFile.h"
 #include "../Assets/DFAFile.h"
 #include "../Assets/ExeData.h"
 #include "../Assets/IMGFile.h"
 #include "../Assets/INFFile.h"
-#include "../Assets/MiscAssets.h"
+#include "../Assets/MIFUtils.h"
 #include "../Assets/RCIFile.h"
 #include "../Assets/SETFile.h"
-#include "../Entities/CharacterClass.h"
+#include "../Entities/CharacterClassLibrary.h"
+#include "../Entities/CitizenManager.h"
+#include "../Entities/EntityDefinitionLibrary.h"
 #include "../Entities/EntityType.h"
 #include "../Entities/StaticEntity.h"
+#include "../Game/CardinalDirection.h"
+#include "../Game/Game.h"
 #include "../Items/ArmorMaterialType.h"
 #include "../Math/Constants.h"
 #include "../Math/Random.h"
-#include "../Media/PaletteFile.h"
-#include "../Media/PaletteName.h"
 #include "../Media/TextureManager.h"
+#include "../Rendering/ArenaRenderUtils.h"
 #include "../Rendering/Renderer.h"
-#include "../World/ExteriorWorldData.h"
-#include "../World/InteriorWorldData.h"
-#include "../World/Location.h"
-#include "../World/LocationDataType.h"
-#include "../World/LocationUtils.h"
-#include "../World/VoxelFacing.h"
-#include "../World/WorldData.h"
-#include "../World/WorldType.h"
 
 #include "components/debug/Debug.h"
 #include "components/utilities/Bytes.h"
 #include "components/utilities/String.h"
 #include "components/utilities/StringView.h"
 
-LevelData::FlatDef::FlatDef(int flatIndex)
+LevelData::FlatDef::FlatDef(ArenaTypes::FlatIndex flatIndex)
 {
 	this->flatIndex = flatIndex;
 }
 
-int LevelData::FlatDef::getFlatIndex() const
+ArenaTypes::FlatIndex LevelData::FlatDef::getFlatIndex() const
 {
 	return this->flatIndex;
 }
 
-const std::vector<Int2> &LevelData::FlatDef::getPositions() const
+const std::vector<NewInt2> &LevelData::FlatDef::getPositions() const
 {
 	return this->positions;
 }
 
-void LevelData::FlatDef::addPosition(const Int2 &position)
+void LevelData::FlatDef::addPosition(const NewInt2 &position)
 {
 	this->positions.push_back(position);
 }
 
-LevelData::Lock::Lock(const Int2 &position, int lockLevel)
+LevelData::Lock::Lock(const NewInt2 &position, int lockLevel)
 	: position(position)
 {
 	this->lockLevel = lockLevel;
 }
 
-const Int2 &LevelData::Lock::getPosition() const
+const NewInt2 &LevelData::Lock::getPosition() const
 {
 	return this->position;
 }
@@ -102,100 +110,58 @@ void LevelData::TextTrigger::setPreviouslyDisplayed(bool previouslyDisplayed)
 	this->previouslyDisplayed = previouslyDisplayed;
 }
 
-LevelData::DoorState::DoorState(const Int2 &voxel, double percentOpen,
-	DoorState::Direction direction)
-	: voxel(voxel)
+void LevelData::Transition::init(const NewInt2 &voxel, Type type)
 {
-	this->percentOpen = percentOpen;
-	this->direction = direction;
+	this->voxel = voxel;
+	this->type = type;
 }
 
-LevelData::DoorState::DoorState(const Int2 &voxel)
-	: DoorState(voxel, 0.0, DoorState::Direction::Opening) { }
-
-const Int2 &LevelData::DoorState::getVoxel() const
+LevelData::Transition LevelData::Transition::makeLevelUp(const NewInt2 &voxel)
 {
-	return this->voxel;
+	Transition transition;
+	transition.init(voxel, Transition::Type::LevelUp);
+	return transition;
 }
 
-double LevelData::DoorState::getPercentOpen() const
+LevelData::Transition LevelData::Transition::makeLevelDown(const NewInt2 &voxel)
 {
-	return this->percentOpen;
+	Transition transition;
+	transition.init(voxel, Transition::Type::LevelDown);
+	return transition;
 }
 
-bool LevelData::DoorState::isClosing() const
+LevelData::Transition LevelData::Transition::makeMenu(const NewInt2 &voxel, int id)
 {
-	return this->direction == Direction::Closing;
+	Transition transition;
+	transition.init(voxel, Transition::Type::Menu);
+	transition.menu.id = id;
+	return transition;
 }
 
-bool LevelData::DoorState::isClosed() const
-{
-	return this->percentOpen == 0.0;
-}
-
-void LevelData::DoorState::setDirection(DoorState::Direction direction)
-{
-	this->direction = direction;
-}
-
-void LevelData::DoorState::update(double dt)
-{
-	const double delta = DoorState::DEFAULT_SPEED * dt;
-
-	// Decide how to change the door state depending on its current direction.
-	if (this->direction == DoorState::Direction::Opening)
-	{
-		this->percentOpen = std::min(this->percentOpen + delta, 1.0);
-		const bool isOpen = this->percentOpen == 1.0;
-
-		if (isOpen)
-		{
-			this->direction = DoorState::Direction::None;
-		}
-	}
-	else if (this->direction == DoorState::Direction::Closing)
-	{
-		this->percentOpen = std::max(this->percentOpen - delta, 0.0);
-
-		if (this->isClosed())
-		{
-			this->direction = DoorState::Direction::None;
-		}
-	}
-}
-
-LevelData::FadeState::FadeState(const Int3 &voxel, double targetSeconds)
-	: voxel(voxel)
-{
-	this->currentSeconds = 0.0;
-	this->targetSeconds = targetSeconds;
-}
-
-LevelData::FadeState::FadeState(const Int3 &voxel)
-	: FadeState(voxel, FadeState::DEFAULT_SECONDS) { }
-
-const Int3 &LevelData::FadeState::getVoxel() const
+const NewInt2 &LevelData::Transition::getVoxel() const
 {
 	return this->voxel;
 }
 
-double LevelData::FadeState::getPercentDone() const
+LevelData::Transition::Type LevelData::Transition::getType() const
 {
-	return std::clamp(this->currentSeconds / this->targetSeconds, 0.0, 1.0);
+	return this->type;
 }
 
-bool LevelData::FadeState::isDoneFading() const
+const LevelData::Transition::Menu &LevelData::Transition::getMenu() const
 {
-	return this->getPercentDone() == 1.0;
+	DebugAssert(this->type == Transition::Type::Menu);
+	return this->menu;
 }
 
-void LevelData::FadeState::update(double dt)
+void LevelData::Interior::init(uint32_t skyColor, bool outdoorDungeon)
 {
-	this->currentSeconds = std::min(this->currentSeconds + dt, this->targetSeconds);
+	this->skyColor = skyColor;
+	this->outdoorDungeon = outdoorDungeon;
 }
 
-LevelData::LevelData(int gridWidth, int gridHeight, int gridDepth, const std::string &infName,
-	const std::string &name)
+LevelData::LevelData(SNInt gridWidth, int gridHeight, WEInt gridDepth, const std::string &infName,
+	const std::string &name, bool isInterior)
 	: voxelGrid(gridWidth, gridHeight, gridDepth), name(name)
 {
 	const int chunkCountX = (gridWidth + (RMDFile::WIDTH - 1)) / RMDFile::WIDTH;
@@ -206,11 +172,340 @@ LevelData::LevelData(int gridWidth, int gridHeight, int gridDepth, const std::st
 	{
 		DebugCrash("Could not init .INF file \"" + infName + "\".");
 	}
+
+	this->isInterior = isInterior;
 }
 
-LevelData::~LevelData()
+LevelData LevelData::loadInterior(const MIFFile::Level &level, SNInt gridWidth, WEInt gridDepth, const ExeData &exeData)
 {
+	// .INF filename associated with the interior level.
+	const std::string infName = String::toUppercase(level.getInfo());
 
+	constexpr bool isInterior = true;
+	LevelData levelData(gridWidth, ArenaInteriorUtils::GRID_HEIGHT, gridDepth, infName, level.getName(), isInterior);
+
+	const INFFile &inf = levelData.getInfFile();
+	const bool outdoorDungeon = inf.getCeiling().outdoorDungeon;
+	const uint32_t skyColor = (outdoorDungeon ? Color::Gray : Color::Black).toARGB(); // @todo: use color from palette
+	levelData.interior.init(skyColor, outdoorDungeon);
+
+	// Load FLOR and MAP1 voxels.
+	constexpr MapType mapType = MapType::Interior;
+	levelData.readFLOR(level.getFLOR(), inf, mapType);
+	levelData.readMAP1(level.getMAP1(), inf, mapType, exeData);
+
+	// All interiors have ceilings except some main quest dungeons which have a 1
+	// as the third number after *CEILING in their .INF file.
+	const bool hasCeiling = !inf.getCeiling().outdoorDungeon;
+
+	// Fill the second floor with ceiling tiles if it's an "indoor dungeon". Otherwise,
+	// leave it empty (for some "outdoor dungeons").
+	if (hasCeiling)
+	{
+		levelData.readCeiling(inf);
+	}
+
+	// Assign locks.
+	levelData.readLocks(level.getLOCK());
+
+	// Assign text and sound triggers.
+	levelData.readTriggers(level.getTRIG(), inf);
+
+	return levelData;
+}
+
+LevelData LevelData::loadDungeon(ArenaRandom &random, const MIFFile &mif, int levelUpBlock,
+	const int *levelDownBlock, int widthChunks, int depthChunks, const std::string &infName, SNInt gridWidth,
+	WEInt gridDepth, const ExeData &exeData)
+{
+	// Create temp buffers for dungeon block data.
+	Buffer2D<uint16_t> tempFlor(gridDepth, gridWidth);
+	Buffer2D<uint16_t> tempMap1(gridDepth, gridWidth);
+	tempFlor.fill(0);
+	tempMap1.fill(0);
+
+	std::vector<ArenaTypes::MIFLock> tempLocks;
+	std::vector<ArenaTypes::MIFTrigger> tempTriggers;
+	const int tileSet = random.next() % 4;
+
+	for (SNInt row = 0; row < depthChunks; row++)
+	{
+		const SNInt zOffset = row * ArenaInteriorUtils::DUNGEON_CHUNK_DIM;
+		for (WEInt column = 0; column < widthChunks; column++)
+		{
+			const WEInt xOffset = column * ArenaInteriorUtils::DUNGEON_CHUNK_DIM;
+
+			// Get the selected level from the .MIF file.
+			const int blockIndex = (tileSet * 8) + (random.next() % 8);
+			const auto &blockLevel = mif.getLevel(blockIndex);
+			const BufferView2D<const ArenaTypes::VoxelID> &blockFLOR = blockLevel.getFLOR();
+			const BufferView2D<const ArenaTypes::VoxelID> &blockMAP1 = blockLevel.getMAP1();
+
+			// Copy block data to temp buffers.
+			for (SNInt z = 0; z < ArenaInteriorUtils::DUNGEON_CHUNK_DIM; z++)
+			{
+				for (WEInt x = 0; x < ArenaInteriorUtils::DUNGEON_CHUNK_DIM; x++)
+				{
+					const ArenaTypes::VoxelID srcFlorVoxel = blockFLOR.get(x, z);
+					const ArenaTypes::VoxelID srcMap1Voxel = blockMAP1.get(x, z);
+					const WEInt dstX = xOffset + x;
+					const SNInt dstZ = zOffset + z;
+					tempFlor.set(dstX, dstZ, srcFlorVoxel);
+					tempMap1.set(dstX, dstZ, srcMap1Voxel);
+				}
+			}
+
+			// Assign locks to the current block.
+			const BufferView<const ArenaTypes::MIFLock> &blockLOCK = blockLevel.getLOCK();
+			for (int i = 0; i < blockLOCK.getCount(); i++)
+			{
+				const auto &lock = blockLOCK.get(i);
+
+				ArenaTypes::MIFLock tempLock;
+				tempLock.x = xOffset + lock.x;
+				tempLock.y = zOffset + lock.y;
+				tempLock.lockLevel = lock.lockLevel;
+
+				tempLocks.push_back(std::move(tempLock));
+			}
+
+			// Assign text/sound triggers to the current block.
+			const BufferView<const ArenaTypes::MIFTrigger> &blockTRIG = blockLevel.getTRIG();
+			for (int i = 0; i < blockTRIG.getCount(); i++)
+			{
+				const auto &trigger = blockTRIG.get(i);
+
+				ArenaTypes::MIFTrigger tempTrigger;
+				tempTrigger.x = xOffset + trigger.x;
+				tempTrigger.y = zOffset + trigger.y;
+				tempTrigger.textIndex = trigger.textIndex;
+				tempTrigger.soundIndex = trigger.soundIndex;
+
+				tempTriggers.push_back(std::move(tempTrigger));
+			}
+		}
+	}
+
+	// Dungeon (either named or in wilderness).
+	constexpr bool isInterior = true;
+	LevelData levelData(gridWidth, ArenaInteriorUtils::GRID_HEIGHT, gridDepth, infName, std::string(), isInterior);
+
+	const uint32_t skyColor = Color::Black.toARGB(); // @todo: use color from palette
+	constexpr bool outdoorDungeon = false;
+	levelData.interior.init(skyColor, outdoorDungeon);
+
+	// Draw perimeter blocks. First top and bottom, then right and left.
+	constexpr ArenaTypes::VoxelID perimeterVoxel = 0x7800;
+	for (WEInt x = 0; x < tempMap1.getWidth(); x++)
+	{
+		tempMap1.set(x, 0, perimeterVoxel);
+		tempMap1.set(x, tempMap1.getHeight() - 1, perimeterVoxel);
+	}
+
+	for (SNInt z = 1; z < (tempMap1.getHeight() - 1); z++)
+	{
+		tempMap1.set(0, z, perimeterVoxel);
+		tempMap1.set(tempMap1.getWidth() - 1, z, perimeterVoxel);
+	}
+
+	const INFFile &inf = levelData.getInfFile();
+
+	// Put transition blocks, unless null.
+	const uint8_t levelUpVoxelByte = *inf.getLevelUpIndex() + 1;
+	WEInt levelUpX;
+	SNInt levelUpZ;
+	ArenaInteriorUtils::unpackLevelChangeVoxel(levelUpBlock, &levelUpX, &levelUpZ);
+	tempMap1.set(ArenaInteriorUtils::offsetLevelChangeVoxel(levelUpX),
+		ArenaInteriorUtils::offsetLevelChangeVoxel(levelUpZ),
+		ArenaInteriorUtils::convertLevelChangeVoxel(levelUpVoxelByte));
+
+	if (levelDownBlock != nullptr)
+	{
+		const uint8_t levelDownVoxelByte = *inf.getLevelDownIndex() + 1;
+		WEInt levelDownX;
+		SNInt levelDownZ;
+		ArenaInteriorUtils::unpackLevelChangeVoxel(*levelDownBlock, &levelDownX, &levelDownZ);
+		tempMap1.set(ArenaInteriorUtils::offsetLevelChangeVoxel(levelDownX),
+			ArenaInteriorUtils::offsetLevelChangeVoxel(levelDownZ),
+			ArenaInteriorUtils::convertLevelChangeVoxel(levelDownVoxelByte));
+	}
+
+	const BufferView2D<const ArenaTypes::VoxelID> tempFlorView(
+		tempFlor.get(), tempFlor.getWidth(), tempFlor.getHeight());
+	const BufferView2D<const ArenaTypes::VoxelID> tempMap1View(
+		tempMap1.get(), tempMap1.getWidth(), tempMap1.getHeight());
+
+	// Load FLOR, MAP1, and ceiling into the voxel grid.
+	constexpr MapType mapType = MapType::Interior;
+	levelData.readFLOR(tempFlorView, inf, mapType);
+	levelData.readMAP1(tempMap1View, inf, mapType, exeData);
+	levelData.readCeiling(inf);
+
+	const BufferView<const ArenaTypes::MIFLock> tempLocksView(
+		tempLocks.data(), static_cast<int>(tempLocks.size()));
+	const BufferView<const ArenaTypes::MIFTrigger> tempTriggersView(
+		tempTriggers.data(), static_cast<int>(tempTriggers.size()));
+
+	// Load locks and triggers (if any).
+	levelData.readLocks(tempLocksView);
+	levelData.readTriggers(tempTriggersView, inf);
+
+	return levelData;
+}
+
+LevelData LevelData::loadCity(const LocationDefinition &locationDef, const ProvinceDefinition &provinceDef,
+	const MIFFile::Level &level, WeatherType weatherType, int currentDay, int starCount, const std::string &infName,
+	SNInt gridWidth, WEInt gridDepth, const BinaryAssetLibrary &binaryAssetLibrary,
+	const TextAssetLibrary &textAssetLibrary, TextureManager &textureManager)
+{
+	// Create temp voxel data buffers and write the city skeleton data to them. Each city
+	// block will be written to them as well.
+	Buffer2D<ArenaTypes::VoxelID> tempFlor(gridDepth, gridWidth);
+	Buffer2D<ArenaTypes::VoxelID> tempMap1(gridDepth, gridWidth);
+	Buffer2D<ArenaTypes::VoxelID> tempMap2(gridDepth, gridWidth);
+	BufferView2D<ArenaTypes::VoxelID> tempFlorView(tempFlor.get(), tempFlor.getWidth(), tempFlor.getHeight());
+	BufferView2D<ArenaTypes::VoxelID> tempMap1View(tempMap1.get(), tempMap1.getWidth(), tempMap1.getHeight());
+	BufferView2D<ArenaTypes::VoxelID> tempMap2View(tempMap2.get(), tempMap2.getWidth(), tempMap2.getHeight());
+	ArenaCityUtils::writeSkeleton(level, tempFlorView, tempMap1View, tempMap2View);
+
+	// Get the city's seed for random chunk generation. It is modified later during
+	// building name generation.
+	const LocationDefinition::CityDefinition &cityDef = locationDef.getCityDefinition();
+	const uint32_t citySeed = cityDef.citySeed;
+	ArenaRandom random(citySeed);
+
+	if (!cityDef.premade)
+	{
+		// Generate procedural city data and write it into the temp buffers.
+		const BufferView<const uint8_t> reservedBlocks(cityDef.reservedBlocks->data(),
+			static_cast<int>(cityDef.reservedBlocks->size()));
+		const OriginalInt2 blockStartPosition(cityDef.blockStartPosX, cityDef.blockStartPosY);
+		ArenaCityUtils::generateCity(citySeed, cityDef.cityBlocksPerSide, gridDepth, reservedBlocks,
+			blockStartPosition, random, binaryAssetLibrary, tempFlor, tempMap1, tempMap2);
+	}
+
+	// Run the palace gate graphic algorithm over the perimeter of the MAP1 data.
+	ArenaCityUtils::revisePalaceGraphics(tempMap1, gridWidth, gridDepth);
+
+	// Create the level for the voxel data to be written into.
+	constexpr bool isInterior = false;
+	LevelData levelData(gridWidth, ArenaCityUtils::LEVEL_HEIGHT, gridDepth, infName, level.getName(), isInterior);
+
+	const BufferView2D<const ArenaTypes::VoxelID> tempFlorConstView(
+		tempFlor.get(), tempFlor.getWidth(), tempFlor.getHeight());
+	const BufferView2D<const ArenaTypes::VoxelID> tempMap1ConstView(
+		tempMap1.get(), tempMap1.getWidth(), tempMap1.getHeight());
+	const BufferView2D<const ArenaTypes::VoxelID> tempMap2ConstView(
+		tempMap2.get(), tempMap2.getWidth(), tempMap2.getHeight());
+	const INFFile &inf = levelData.getInfFile();
+	const auto &exeData = binaryAssetLibrary.getExeData();
+
+	// Load FLOR, MAP1, and MAP2 voxels into the voxel grid.
+	constexpr MapType mapType = MapType::City;
+	levelData.readFLOR(tempFlorConstView, inf, mapType);
+	levelData.readMAP1(tempMap1ConstView, inf, mapType, exeData);
+	levelData.readMAP2(tempMap2ConstView, inf);
+
+	// Generate building names.
+	levelData.exterior.menuNames = LevelData::generateBuildingNames(locationDef, provinceDef, random,
+		levelData.getVoxelGrid(), levelData.getTransitions(), binaryAssetLibrary, textAssetLibrary);
+
+	// Generate distant sky.
+	levelData.exterior.distantSky.init(locationDef, provinceDef, weatherType, currentDay,
+		starCount, exeData, textureManager);
+
+	return levelData;
+}
+
+LevelData LevelData::loadWilderness(const LocationDefinition &locationDef, const ProvinceDefinition &provinceDef,
+	WeatherType weatherType, int currentDay, int starCount, const std::string &infName,
+	const BinaryAssetLibrary &binaryAssetLibrary, TextureManager &textureManager)
+{
+	const LocationDefinition::CityDefinition &cityDef = locationDef.getCityDefinition();
+	const ExeData::Wilderness &wildData = binaryAssetLibrary.getExeData().wild;
+	const Buffer2D<ArenaWildUtils::WildBlockID> wildIndices =
+		ArenaWildUtils::generateWildernessIndices(cityDef.wildSeed, wildData);
+
+	// Temp buffers for voxel data.
+	Buffer2D<ArenaTypes::VoxelID> tempFlor(RMDFile::DEPTH * wildIndices.getWidth(),
+		RMDFile::WIDTH * wildIndices.getHeight());
+	Buffer2D<ArenaTypes::VoxelID> tempMap1(tempFlor.getWidth(), tempFlor.getHeight());
+	Buffer2D<ArenaTypes::VoxelID> tempMap2(tempFlor.getWidth(), tempFlor.getHeight());
+	tempFlor.fill(0);
+	tempMap1.fill(0);
+	tempMap2.fill(0);
+
+	auto writeRMD = [&binaryAssetLibrary, &tempFlor, &tempMap1, &tempMap2](
+		uint8_t rmdID, WEInt xOffset, SNInt zOffset)
+	{
+		const std::vector<RMDFile> &rmdFiles = binaryAssetLibrary.getWildernessChunks();
+		const int rmdIndex = DebugMakeIndex(rmdFiles, rmdID - 1);
+		const RMDFile &rmd = rmdFiles[rmdIndex];
+
+		// Copy .RMD voxel data to temp buffers.
+		const BufferView2D<const ArenaTypes::VoxelID> rmdFLOR = rmd.getFLOR();
+		const BufferView2D<const ArenaTypes::VoxelID> rmdMAP1 = rmd.getMAP1();
+		const BufferView2D<const ArenaTypes::VoxelID> rmdMAP2 = rmd.getMAP2();
+
+		for (SNInt z = 0; z < RMDFile::DEPTH; z++)
+		{
+			for (WEInt x = 0; x < RMDFile::WIDTH; x++)
+			{
+				const ArenaTypes::VoxelID srcFlorVoxel = rmdFLOR.get(x, z);
+				const ArenaTypes::VoxelID srcMap1Voxel = rmdMAP1.get(x, z);
+				const ArenaTypes::VoxelID srcMap2Voxel = rmdMAP2.get(x, z);
+				const WEInt dstX = xOffset + x;
+				const SNInt dstZ = zOffset + z;
+				tempFlor.set(dstX, dstZ, srcFlorVoxel);
+				tempMap1.set(dstX, dstZ, srcMap1Voxel);
+				tempMap2.set(dstX, dstZ, srcMap2Voxel);
+			}
+		}
+	};
+
+	// Load .RMD files into the wilderness, each at some X and Z offset in the voxel grid.
+	for (int y = 0; y < wildIndices.getHeight(); y++)
+	{
+		for (int x = 0; x < wildIndices.getWidth(); x++)
+		{
+			const uint8_t wildIndex = wildIndices.get(x, y);
+			writeRMD(wildIndex, x * RMDFile::WIDTH, y * RMDFile::DEPTH);
+		}
+	}
+
+	// Change the placeholder WILD00{1..4}.MIF blocks to the ones for the given city.
+	ArenaWildUtils::reviseWildernessCity(locationDef, tempFlor, tempMap1, tempMap2, binaryAssetLibrary);
+
+	// Create the level for the voxel data to be written into.
+	const std::string levelName = "WILD"; // Arbitrary
+	constexpr bool isInterior = false;
+	LevelData levelData(tempFlor.getWidth(), ArenaWildUtils::LEVEL_HEIGHT, tempFlor.getHeight(),
+		infName, levelName, isInterior);
+
+	const BufferView2D<const ArenaTypes::VoxelID> tempFlorView(
+		tempFlor.get(), tempFlor.getWidth(), tempFlor.getHeight());
+	const BufferView2D<const ArenaTypes::VoxelID> tempMap1View(
+		tempMap1.get(), tempMap1.getWidth(), tempMap1.getHeight());
+	const BufferView2D<const ArenaTypes::VoxelID> tempMap2View(
+		tempMap2.get(), tempMap2.getWidth(), tempMap2.getHeight());
+	const INFFile &inf = levelData.getInfFile();
+	const auto &exeData = binaryAssetLibrary.getExeData();
+
+	// Load FLOR, MAP1, and MAP2 voxels into the voxel grid.
+	constexpr MapType mapType = MapType::Wilderness;
+	levelData.readFLOR(tempFlorView, inf, mapType);
+	levelData.readMAP1(tempMap1View, inf, mapType, exeData);
+	levelData.readMAP2(tempMap2View, inf);
+
+	// Generate wilderness building names.
+	levelData.exterior.menuNames = LevelData::generateWildChunkBuildingNames(
+		levelData.getVoxelGrid(), levelData.getTransitions(), exeData);
+
+	// Generate distant sky.
+	levelData.exterior.distantSky.init(locationDef, provinceDef, weatherType, currentDay,
+		starCount, exeData, textureManager);
+
+	return levelData;
 }
 
 const std::string &LevelData::getName() const
@@ -220,7 +515,7 @@ const std::string &LevelData::getName() const
 
 double LevelData::getCeilingHeight() const
 {
-	return static_cast<double>(this->inf.getCeiling().height) / MIFFile::ARENA_UNITS;
+	return static_cast<double>(this->inf.getCeiling().height) / MIFUtils::ARENA_UNITS;
 }
 
 std::vector<LevelData::FlatDef> &LevelData::getFlats()
@@ -233,24 +528,102 @@ const std::vector<LevelData::FlatDef> &LevelData::getFlats() const
 	return this->flatsLists;
 }
 
-std::vector<LevelData::DoorState> &LevelData::getOpenDoors()
+LevelData::VoxelInstanceGroup *LevelData::tryGetVoxelInstances(const ChunkInt2 &chunk)
 {
-	return this->openDoors;
+	const auto iter = this->voxelInstMap.find(chunk);
+	if (iter != this->voxelInstMap.end())
+	{
+		return &iter->second;
+	}
+	else
+	{
+		return nullptr;
+	}
 }
 
-const std::vector<LevelData::DoorState> &LevelData::getOpenDoors() const
+const LevelData::VoxelInstanceGroup *LevelData::tryGetVoxelInstances(const ChunkInt2 &chunk) const
 {
-	return this->openDoors;
+	const auto iter = this->voxelInstMap.find(chunk);
+	if (iter != this->voxelInstMap.end())
+	{
+		return &iter->second;
+	}
+	else
+	{
+		return nullptr;
+	}
 }
 
-std::vector<LevelData::FadeState> &LevelData::getFadingVoxels()
+VoxelInstance *LevelData::tryGetVoxelInstance(const NewInt3 &voxel, VoxelInstance::Type type)
 {
-	return this->fadingVoxels;
+	const ChunkInt2 chunk = VoxelUtils::newVoxelToChunk(NewInt2(voxel.x, voxel.z));
+	VoxelInstanceGroup *voxelInstGroup = this->tryGetVoxelInstances(chunk);
+	if (voxelInstGroup != nullptr)
+	{
+		const auto iter = voxelInstGroup->find(voxel);
+		if (iter != voxelInstGroup->end())
+		{
+			std::vector<VoxelInstance> &voxelInsts = iter->second;
+			std::optional<int> index;
+			for (int i = 0; i < static_cast<int>(voxelInsts.size()); i++)
+			{
+				const VoxelInstance &voxelInst = voxelInsts[i];
+				if (voxelInst.getType() == type)
+				{
+					index = i;
+					break;
+				}
+			}
+
+			if (index.has_value())
+			{
+				return &voxelInsts[*index];
+			}
+		}
+	}
+
+	return nullptr;
 }
 
-const std::vector<LevelData::FadeState> &LevelData::getFadingVoxels() const
+const VoxelInstance *LevelData::tryGetVoxelInstance(const NewInt3 &voxel, VoxelInstance::Type type) const
 {
-	return this->fadingVoxels;
+	const ChunkInt2 chunk = VoxelUtils::newVoxelToChunk(NewInt2(voxel.x, voxel.z));
+	const VoxelInstanceGroup *voxelInstGroup = this->tryGetVoxelInstances(chunk);
+	if (voxelInstGroup != nullptr)
+	{
+		const auto iter = voxelInstGroup->find(voxel);
+		if (iter != voxelInstGroup->end())
+		{
+			const std::vector<VoxelInstance> &voxelInsts = iter->second;
+			std::optional<int> index;
+			for (int i = 0; i < static_cast<int>(voxelInsts.size()); i++)
+			{
+				const VoxelInstance &voxelInst = voxelInsts[i];
+				if (voxelInst.getType() == type)
+				{
+					index = i;
+					break;
+				}
+			}
+
+			if (index.has_value())
+			{
+				return &voxelInsts[*index];
+			}
+		}
+	}
+
+	return nullptr;
+}
+
+LevelData::Transitions &LevelData::getTransitions()
+{
+	return this->transitions;
+}
+
+const LevelData::Transitions &LevelData::getTransitions() const
+{
+	return this->transitions;
 }
 
 const INFFile &LevelData::getInfFile() const
@@ -278,13 +651,59 @@ const VoxelGrid &LevelData::getVoxelGrid() const
 	return this->voxelGrid;
 }
 
-const LevelData::Lock *LevelData::getLock(const Int2 &voxel) const
+const LevelData::Lock *LevelData::getLock(const NewInt2 &voxel) const
 {
 	const auto lockIter = this->locks.find(voxel);
 	return (lockIter != this->locks.end()) ? &lockIter->second : nullptr;
 }
 
-void LevelData::addFlatInstance(int flatIndex, const Int2 &flatPosition)
+LevelData::TextTrigger *LevelData::getTextTrigger(const NewInt2 &voxel)
+{
+	if (this->isInterior)
+	{
+		auto &textTriggers = this->interior.textTriggers;
+		const auto textIter = textTriggers.find(voxel);
+		return (textIter != textTriggers.end()) ? &textIter->second : nullptr;
+	}
+	else
+	{
+		return nullptr;
+	}
+}
+
+const std::string *LevelData::getSoundTrigger(const NewInt2 &voxel) const
+{
+	if (this->isInterior)
+	{
+		const auto &soundTriggers = this->interior.soundTriggers;
+		const auto soundIter = soundTriggers.find(voxel);
+		return (soundIter != soundTriggers.end()) ? &soundIter->second : nullptr;
+	}
+	else
+	{
+		return nullptr;
+	}
+}
+
+const ArenaLevelUtils::MenuNamesList &LevelData::getMenuNames() const
+{
+	DebugAssert(!this->isInterior);
+	return this->exterior.menuNames;
+}
+
+bool LevelData::isOutdoorDungeon() const
+{
+	if (this->isInterior)
+	{
+		return this->interior.outdoorDungeon;
+	}
+	else
+	{
+		return false;
+	}
+}
+
+void LevelData::addFlatInstance(ArenaTypes::FlatIndex flatIndex, const NewInt2 &flatPosition)
 {
 	// Add position to instance list if the flat def has already been created.
 	const auto iter = std::find_if(this->flatsLists.begin(), this->flatsLists.end(),
@@ -306,24 +725,71 @@ void LevelData::addFlatInstance(int flatIndex, const Int2 &flatPosition)
 	}
 }
 
-void LevelData::setVoxel(int x, int y, int z, uint16_t id)
+void LevelData::addVoxelInstance(VoxelInstance &&voxelInst)
+{
+	const ChunkInt2 chunk = VoxelUtils::newVoxelToChunk(NewInt2(voxelInst.getX(), voxelInst.getZ()));
+	auto iter = this->voxelInstMap.find(chunk);
+	if (iter == this->voxelInstMap.end())
+	{
+		iter = this->voxelInstMap.emplace(std::make_pair(chunk, VoxelInstanceGroup())).first;
+	}
+
+	VoxelInstanceGroup &voxelInstGroup = iter->second;
+	const NewInt3 voxel(voxelInst.getX(), voxelInst.getY(), voxelInst.getZ());
+	auto groupIter = voxelInstGroup.find(voxel);
+	if (groupIter == voxelInstGroup.end())
+	{
+		groupIter = voxelInstGroup.emplace(std::make_pair(voxel, std::vector<VoxelInstance>())).first;
+	}
+
+	std::vector<VoxelInstance> &voxelInsts = groupIter->second;
+	voxelInsts.emplace_back(std::move(voxelInst));
+}
+
+void LevelData::clearTemporaryVoxelInstances()
+{
+	for (auto &pair : this->voxelInstMap)
+	{
+		VoxelInstanceGroup &voxelInstGroup = pair.second;
+		for (auto &groupPair : voxelInstGroup)
+		{
+			std::vector<VoxelInstance> &voxelInsts = groupPair.second;
+			for (int i = static_cast<int>(voxelInsts.size()) - 1; i >= 0; i--)
+			{
+				VoxelInstance &voxelInst = voxelInsts[i];
+				const VoxelInstance::Type voxelInstType = voxelInst.getType();
+				const bool isTemporary = (voxelInstType == VoxelInstance::Type::OpenDoor) ||
+					(voxelInstType == VoxelInstance::Type::Fading);
+
+				if (isTemporary)
+				{
+					voxelInsts.erase(voxelInsts.begin() + i);
+				}
+			}
+		}
+	}
+}
+
+void LevelData::setVoxel(SNInt x, int y, WEInt z, uint16_t id)
 {
 	this->voxelGrid.setVoxel(x, y, z, id);
 }
 
-void LevelData::readFLOR(const uint16_t *flor, const INFFile &inf, int gridWidth, int gridDepth)
+void LevelData::readFLOR(const BufferView2D<const ArenaTypes::VoxelID> &flor, const INFFile &inf,
+	MapType mapType)
 {
+	const SNInt gridWidth = flor.getHeight();
+	const WEInt gridDepth = flor.getWidth();
+
 	// Lambda for obtaining a two-byte FLOR voxel.
-	auto getFlorVoxel = [flor, gridWidth, gridDepth](int x, int z)
+	auto getFlorVoxel = [&flor, gridWidth, gridDepth](SNInt x, WEInt z)
 	{
-		// Read voxel data in reverse order.
-		const int index = (((gridDepth - 1) - z) * 2) + ((((gridWidth - 1) - x) * 2) * gridDepth);
-		const uint16_t voxel = Bytes::getLE16(reinterpret_cast<const uint8_t*>(flor) + index);
+		const uint16_t voxel = flor.get(z, x);
 		return voxel;
 	};
 
 	// Lambda for obtaining the voxel data index of a typical (non-chasm) FLOR voxel.
-	auto getFlorDataIndex = [this](uint16_t florVoxel, int floorTextureID)
+	auto getFlorDataIndex = [this, &inf, mapType](uint16_t florVoxel, int floorTextureID)
 	{
 		// See if the voxel already has a mapping.
 		const auto floorIter = std::find_if(
@@ -340,47 +806,53 @@ void LevelData::readFLOR(const uint16_t *flor, const INFFile &inf, int gridWidth
 		else
 		{
 			// Insert new mapping.
-			const int index = this->voxelGrid.addVoxelDef(VoxelDefinition::makeFloor(floorTextureID));
+			const int clampedTextureID = ArenaVoxelUtils::clampVoxelTextureID(floorTextureID);
+			TextureAssetReference textureAssetRef(
+				ArenaVoxelUtils::getVoxelTextureFilename(clampedTextureID, inf),
+				ArenaVoxelUtils::getVoxelTextureSetIndex(clampedTextureID, inf));
+			const bool isWildWallColored = ArenaVoxelUtils::isFloorWildWallColored(floorTextureID, mapType);
+			const int index = this->voxelGrid.addVoxelDef(
+				VoxelDefinition::makeFloor(std::move(textureAssetRef), isWildWallColored));
 			this->floorDataMappings.push_back(std::make_pair(florVoxel, index));
 			return index;
 		}
 	};
 
-	using ChasmDataFunc = VoxelDefinition(*)(const INFFile &inf, const std::array<bool, 4>&);
+	using ChasmDataFunc = VoxelDefinition(*)(const INFFile &inf);
 
 	// Lambda for obtaining the voxel data index of a chasm voxel. The given function argument
 	// returns the created voxel data if there was no previous mapping.
-	auto getChasmDataIndex = [this, &inf](uint16_t florVoxel, ChasmDataFunc chasmFunc,
-		const std::array<bool, 4> &adjacentFaces)
+	auto getChasmDataIndex = [this, &inf](uint16_t florVoxel, ChasmDataFunc chasmFunc)
 	{
-		const auto chasmIter = std::find_if(
-			this->chasmDataMappings.begin(), this->chasmDataMappings.end(),
-			[florVoxel, &adjacentFaces](const auto &tuple)
+		const auto floorIter = std::find_if(
+			this->floorDataMappings.begin(), this->floorDataMappings.end(),
+			[florVoxel](const std::pair<uint16_t, int> &pair)
 		{
-			return (std::get<0>(tuple) == florVoxel) && (std::get<1>(tuple) == adjacentFaces);
+			return pair.first == florVoxel;
 		});
 
-		if (chasmIter != this->chasmDataMappings.end())
+		if (floorIter != this->floorDataMappings.end())
 		{
-			return std::get<2>(*chasmIter);
+			return floorIter->second;
 		}
 		else
 		{
-			const int index = this->voxelGrid.addVoxelDef(chasmFunc(inf, adjacentFaces));
-			this->chasmDataMappings.push_back(std::make_tuple(florVoxel, adjacentFaces, index));
+			// Insert new mapping.
+			const int index = this->voxelGrid.addVoxelDef(chasmFunc(inf));
+			this->floorDataMappings.push_back(std::make_pair(florVoxel, index));
 			return index;
 		}
 	};
 
 	// Helper lambdas for creating each type of chasm voxel data.
-	auto makeDryChasmVoxelDef = [](const INFFile &inf, const std::array<bool, 4> &adjacentFaces)
+	auto makeDryChasmVoxelDef = [](const INFFile &inf)
 	{
 		const int dryChasmID = [&inf]()
 		{
-			const int *ptr = inf.getDryChasmIndex();
-			if (ptr != nullptr)
+			const std::optional<int> &index = inf.getDryChasmIndex();
+			if (index.has_value())
 			{
-				return *ptr;
+				return *index;
 			}
 			else
 			{
@@ -389,20 +861,21 @@ void LevelData::readFLOR(const uint16_t *flor, const INFFile &inf, int gridWidth
 			}
 		}();
 
-		DebugAssert(adjacentFaces.size() == 4);
-		return VoxelDefinition::makeChasm(dryChasmID,
-			adjacentFaces[0], adjacentFaces[1], adjacentFaces[2], adjacentFaces[3],
-			VoxelDefinition::ChasmData::Type::Dry);
+		const int clampedTextureID = ArenaVoxelUtils::clampVoxelTextureID(dryChasmID);
+		TextureAssetReference textureAssetRef(
+			ArenaVoxelUtils::getVoxelTextureFilename(clampedTextureID, inf),
+			ArenaVoxelUtils::getVoxelTextureSetIndex(clampedTextureID, inf));
+		return VoxelDefinition::makeChasm(std::move(textureAssetRef), ArenaTypes::ChasmType::Dry);
 	};
 
-	auto makeLavaChasmVoxelDef = [](const INFFile &inf, const std::array<bool, 4> &adjacentFaces)
+	auto makeLavaChasmVoxelDef = [](const INFFile &inf)
 	{
 		const int lavaChasmID = [&inf]()
 		{
-			const int *ptr = inf.getLavaChasmIndex();
-			if (ptr != nullptr)
+			const std::optional<int> &index = inf.getLavaChasmIndex();
+			if (index.has_value())
 			{
-				return *ptr;
+				return *index;
 			}
 			else
 			{
@@ -411,20 +884,21 @@ void LevelData::readFLOR(const uint16_t *flor, const INFFile &inf, int gridWidth
 			}
 		}();
 
-		DebugAssert(adjacentFaces.size() == 4);
-		return VoxelDefinition::makeChasm(lavaChasmID,
-			adjacentFaces[0], adjacentFaces[1], adjacentFaces[2], adjacentFaces[3],
-			VoxelDefinition::ChasmData::Type::Lava);
+		const int clampedTextureID = ArenaVoxelUtils::clampVoxelTextureID(lavaChasmID);
+		TextureAssetReference textureAssetRef(
+			ArenaVoxelUtils::getVoxelTextureFilename(clampedTextureID, inf),
+			ArenaVoxelUtils::getVoxelTextureSetIndex(clampedTextureID, inf));
+		return VoxelDefinition::makeChasm(std::move(textureAssetRef), ArenaTypes::ChasmType::Lava);
 	};
 
-	auto makeWetChasmVoxelDef = [](const INFFile &inf, const std::array<bool, 4> &adjacentFaces)
+	auto makeWetChasmVoxelDef = [](const INFFile &inf)
 	{
 		const int wetChasmID = [&inf]()
 		{
-			const int *ptr = inf.getWetChasmIndex();
-			if (ptr != nullptr)
+			const std::optional<int> &index = inf.getWetChasmIndex();
+			if (index.has_value())
 			{
-				return *ptr;
+				return *index;
 			}
 			else
 			{
@@ -433,39 +907,33 @@ void LevelData::readFLOR(const uint16_t *flor, const INFFile &inf, int gridWidth
 			}
 		}();
 
-		DebugAssert(adjacentFaces.size() == 4);
-		return VoxelDefinition::makeChasm(wetChasmID,
-			adjacentFaces[0], adjacentFaces[1], adjacentFaces[2], adjacentFaces[3],
-			VoxelDefinition::ChasmData::Type::Wet);
+		const int clampedTextureID = ArenaVoxelUtils::clampVoxelTextureID(wetChasmID);
+		TextureAssetReference textureAssetRef(
+			ArenaVoxelUtils::getVoxelTextureFilename(clampedTextureID, inf),
+			ArenaVoxelUtils::getVoxelTextureSetIndex(clampedTextureID, inf));
+		return VoxelDefinition::makeChasm(std::move(textureAssetRef), ArenaTypes::ChasmType::Wet);
 	};
 
 	// Write the voxel IDs into the voxel grid.
-	for (int x = 0; x < gridWidth; x++)
+	for (SNInt x = 0; x < gridWidth; x++)
 	{
-		for (int z = 0; z < gridDepth; z++)
+		for (WEInt z = 0; z < gridDepth; z++)
 		{
 			auto getFloorTextureID = [](uint16_t voxel)
 			{
 				return (voxel & 0xFF00) >> 8;
 			};
 
-			auto getFlatIndex = [](uint16_t voxel)
+			auto getFloorFlatID = [](uint16_t voxel)
 			{
 				return voxel & 0x00FF;
-			};
-
-			auto isChasm = [](int id)
-			{
-				return (id == MIFFile::DRY_CHASM) ||
-					(id == MIFFile::LAVA_CHASM) ||
-					(id == MIFFile::WET_CHASM);
 			};
 
 			const uint16_t florVoxel = getFlorVoxel(x, z);
 			const int floorTextureID = getFloorTextureID(florVoxel);
 
 			// See if the floor voxel is either solid or a chasm.
-			if (!isChasm(floorTextureID))
+			if (!MIFUtils::isChasm(floorTextureID))
 			{
 				// Get the voxel data index associated with the floor value, or add it
 				// if it doesn't exist yet.
@@ -474,60 +942,92 @@ void LevelData::readFLOR(const uint16_t *flor, const INFFile &inf, int gridWidth
 			}
 			else
 			{
-				// The voxel is a chasm. See which of its four faces are adjacent to
-				// a solid floor voxel.
-				const uint16_t northVoxel = getFlorVoxel(std::min(x + 1, gridWidth - 1), z);
-				const uint16_t eastVoxel = getFlorVoxel(x, std::min(z + 1, gridDepth - 1));
-				const uint16_t southVoxel = getFlorVoxel(std::max(x - 1, 0), z);
-				const uint16_t westVoxel = getFlorVoxel(x, std::max(z - 1, 0));
+				// Chasm of some type.
+				ChasmDataFunc chasmDataFunc;
+				if (floorTextureID == MIFUtils::DRY_CHASM)
+				{
+					chasmDataFunc = makeDryChasmVoxelDef;
+				}
+				else if (floorTextureID == MIFUtils::LAVA_CHASM)
+				{
+					chasmDataFunc = makeLavaChasmVoxelDef;
+				}
+				else if (floorTextureID == MIFUtils::WET_CHASM)
+				{
+					chasmDataFunc = makeWetChasmVoxelDef;
+				}
+				else
+				{
+					DebugNotImplementedMsg(std::to_string(floorTextureID));
+				}
 
-				const std::array<bool, 4> adjacentFaces
-				{
-					!isChasm(getFloorTextureID(northVoxel)), // North.
-					!isChasm(getFloorTextureID(eastVoxel)), // East.
-					!isChasm(getFloorTextureID(southVoxel)), // South.
-					!isChasm(getFloorTextureID(westVoxel)) // West.
-				};
-
-				if (floorTextureID == MIFFile::DRY_CHASM)
-				{
-					const int dataIndex = getChasmDataIndex(
-						florVoxel, makeDryChasmVoxelDef, adjacentFaces);
-					this->setVoxel(x, 0, z, dataIndex);
-				}
-				else if (floorTextureID == MIFFile::LAVA_CHASM)
-				{
-					const int dataIndex = getChasmDataIndex(
-						florVoxel, makeLavaChasmVoxelDef, adjacentFaces);
-					this->setVoxel(x, 0, z, dataIndex);
-				}
-				else if (floorTextureID == MIFFile::WET_CHASM)
-				{
-					const int dataIndex = getChasmDataIndex(
-						florVoxel, makeWetChasmVoxelDef, adjacentFaces);
-					this->setVoxel(x, 0, z, dataIndex);
-				}
+				const int dataIndex = getChasmDataIndex(florVoxel, chasmDataFunc);
+				this->setVoxel(x, 0, z, dataIndex);
 			}
 
 			// See if the FLOR voxel contains a FLAT index (for raised platform flats).
-			const int flatIndex = getFlatIndex(florVoxel);
-			if (flatIndex > 0)
+			const int floorFlatID = getFloorFlatID(florVoxel);
+			if (floorFlatID > 0)
 			{
-				this->addFlatInstance(flatIndex - 1, Int2(x, z));
+				const ArenaTypes::FlatIndex flatIndex = floorFlatID - 1;
+				this->addFlatInstance(flatIndex, NewInt2(x, z));
+			}
+		}
+	}
+
+	// Set chasm faces based on adjacent voxels.
+	for (SNInt x = 0; x < gridWidth; x++)
+	{
+		for (WEInt z = 0; z < gridDepth; z++)
+		{
+			const NewInt3 voxel(x, 0, z);
+
+			// Ignore non-chasm voxels.
+			const uint16_t voxelID = this->voxelGrid.getVoxel(voxel.x, voxel.y, voxel.z);
+			const VoxelDefinition &voxelDef = this->voxelGrid.getVoxelDef(voxelID);
+			if (voxelDef.type != ArenaTypes::VoxelType::Chasm)
+			{
+				continue;
+			}
+
+			// Query surrounding voxels to see which faces should be set.
+			uint16_t northID, southID, eastID, westID;
+			this->getAdjacentVoxelIDs(voxel, &northID, &southID, &eastID, &westID);
+
+			const VoxelDefinition &northDef = this->voxelGrid.getVoxelDef(northID);
+			const VoxelDefinition &southDef = this->voxelGrid.getVoxelDef(southID);
+			const VoxelDefinition &eastDef = this->voxelGrid.getVoxelDef(eastID);
+			const VoxelDefinition &westDef = this->voxelGrid.getVoxelDef(westID);
+
+			// Booleans for each face of the new chasm voxel.
+			const bool hasNorthFace = northDef.allowsChasmFace();
+			const bool hasSouthFace = southDef.allowsChasmFace();
+			const bool hasEastFace = eastDef.allowsChasmFace();
+			const bool hasWestFace = westDef.allowsChasmFace();
+
+			// Add chasm state if it is different from the default 0 faces chasm (don't need to
+			// do update on existing chasms here because there should be no existing ones).
+			const bool shouldAddChasmState = hasNorthFace || hasEastFace || hasSouthFace || hasWestFace;
+			if (shouldAddChasmState)
+			{
+				VoxelInstance voxelInst = VoxelInstance::makeChasm(
+					x, 0, z, hasNorthFace, hasEastFace, hasSouthFace, hasWestFace);
+				this->addVoxelInstance(std::move(voxelInst));
 			}
 		}
 	}
 }
 
-void LevelData::readMAP1(const uint16_t *map1, const INFFile &inf, WorldType worldType,
-	int gridWidth, int gridDepth, const ExeData &exeData)
+void LevelData::readMAP1(const BufferView2D<const ArenaTypes::VoxelID> &map1, const INFFile &inf,
+	MapType mapType, const ExeData &exeData)
 {
+	const SNInt gridWidth = map1.getHeight();
+	const WEInt gridDepth = map1.getWidth();
+
 	// Lambda for obtaining a two-byte MAP1 voxel.
-	auto getMap1Voxel = [map1, gridWidth, gridDepth](int x, int z)
+	auto getMap1Voxel = [&map1, gridWidth, gridDepth](SNInt x, WEInt z)
 	{
-		// Read voxel data in reverse order.
-		const int index = (((gridDepth - 1) - z) * 2) + ((((gridWidth - 1) - x) * 2) * gridDepth);
-		const uint16_t voxel = Bytes::getLE16(reinterpret_cast<const uint8_t*>(map1) + index);
+		const uint16_t voxel = map1.get(z, x);
 		return voxel;
 	};
 
@@ -560,8 +1060,62 @@ void LevelData::readMAP1(const uint16_t *map1, const INFFile &inf, WorldType wor
 	};
 
 	// Lambda for obtaining the voxel data index of a solid wall.
-	auto getWallDataIndex = [this, &inf, &findWallMapping](uint16_t map1Voxel, uint8_t mostSigByte)
+	auto getWallDataIndex = [this, &inf, &findWallMapping](uint16_t map1Voxel, uint8_t mostSigByte,
+		SNInt x, WEInt z)
 	{
+		const int textureIndex = mostSigByte - 1;
+
+		// Menu index if the voxel has the *MENU tag, or empty if it is not a *MENU voxel.
+		const std::optional<int> &menuIndex = inf.getMenuIndex(textureIndex);
+		const bool isMenu = menuIndex.has_value();
+
+		// Lambda for whether an .INF file *LEVELUP/LEVELDOWN index is for this texture.
+		auto isMatchingLevelChangeIndex = [textureIndex](const std::optional<int> &index)
+		{
+			return index.has_value() && (*index == textureIndex);
+		};
+
+		const bool isLevelUp = isMatchingLevelChangeIndex(inf.getLevelUpIndex());
+		const bool isLevelDown = isMatchingLevelChangeIndex(inf.getLevelDownIndex());
+
+		// Optionally add transition data for this voxel if it is a transition (level change or *MENU).
+		if (isLevelUp || isLevelDown || isMenu)
+		{
+			auto makeWallTransition = [](const NewInt2 &voxel, const std::optional<bool> &levelUp,
+				const std::optional<int> &menuID)
+			{
+				if (levelUp.has_value())
+				{
+					return *levelUp ? LevelData::Transition::makeLevelUp(voxel) :
+						LevelData::Transition::makeLevelDown(voxel);
+				}
+				else
+				{
+					DebugAssert(menuID.has_value());
+					return LevelData::Transition::makeMenu(voxel, *menuID);
+				}
+			};
+
+			const NewInt2 voxel(x, z);
+			const std::optional<bool> optIsLevelUp = [isLevelUp, isLevelDown, isMenu]() -> std::optional<bool>
+			{
+				if (isLevelUp)
+				{
+					return true;
+				}
+				else if (isLevelDown)
+				{
+					return false;
+				}
+				else
+				{
+					return std::nullopt;
+				}
+			}();
+
+			this->transitions.emplace(voxel, makeWallTransition(voxel, optIsLevelUp, menuIndex));
+		}
+
 		const auto wallIter = findWallMapping(map1Voxel);
 		if (wallIter != this->wallDataMappings.end())
 		{
@@ -569,67 +1123,21 @@ void LevelData::readMAP1(const uint16_t *map1, const INFFile &inf, WorldType wor
 		}
 		else
 		{
-			// Lambda for creating a basic solid wall voxel data.
-			auto makeWallVoxelData = [map1Voxel, &inf, mostSigByte]()
-			{
-				const int textureIndex = mostSigByte - 1;
-
-				// Menu index if the voxel has the *MENU tag, or -1 if it is
-				// not a *MENU voxel.
-				const int menuIndex = inf.getMenuIndex(textureIndex);
-				const bool isMenu = menuIndex != -1;
-
-				// Determine what the type of the wall is (level up/down, menu, 
-				// or just plain solid).
-				const VoxelDefinition::WallData::Type type = [&inf, textureIndex, isMenu]()
-				{
-					// Returns whether the given index pointer is non-null and
-					// matches the current texture index.
-					auto matchesIndex = [textureIndex](const int *index)
-					{
-						return (index != nullptr) && (*index == textureIndex);
-					};
-
-					if (matchesIndex(inf.getLevelUpIndex()))
-					{
-						return VoxelDefinition::WallData::Type::LevelUp;
-					}
-					else if (matchesIndex(inf.getLevelDownIndex()))
-					{
-						return VoxelDefinition::WallData::Type::LevelDown;
-					}
-					else if (isMenu)
-					{
-						return VoxelDefinition::WallData::Type::Menu;
-					}
-					else
-					{
-						return VoxelDefinition::WallData::Type::Solid;
-					}
-				}();
-
-				VoxelDefinition voxelDef = VoxelDefinition::makeWall(
-					textureIndex, textureIndex, textureIndex, (isMenu ? &menuIndex : nullptr), type);
-
-				// Set the *MENU index if it's a menu voxel.
-				if (isMenu)
-				{
-					VoxelDefinition::WallData &wallData = voxelDef.wall;
-					wallData.menuID = menuIndex;
-				}
-
-				return voxelDef;
-			};
-
-			const int index = this->voxelGrid.addVoxelDef(makeWallVoxelData());
+			const int clampedTextureID = ArenaVoxelUtils::clampVoxelTextureID(textureIndex);
+			const TextureAssetReference textureAssetRef(
+				ArenaVoxelUtils::getVoxelTextureFilename(clampedTextureID, inf),
+				ArenaVoxelUtils::getVoxelTextureSetIndex(clampedTextureID, inf));
+			const int index = this->voxelGrid.addVoxelDef(VoxelDefinition::makeWall(
+				TextureAssetReference(textureAssetRef), TextureAssetReference(textureAssetRef),
+				TextureAssetReference(textureAssetRef)));
 			this->wallDataMappings.push_back(std::make_pair(map1Voxel, index));
 			return index;
 		}
 	};
 
 	// Lambda for obtaining the voxel data index of a raised platform.
-	auto getRaisedDataIndex = [this, &inf, worldType, &exeData, &findWallMapping](
-		uint16_t map1Voxel, uint8_t mostSigByte, int x, int z)
+	auto getRaisedDataIndex = [this, &inf, mapType, &exeData, &findWallMapping](
+		uint16_t map1Voxel, uint8_t mostSigByte, SNInt x, WEInt z)
 	{
 		const auto wallIter = findWallMapping(map1Voxel);
 		if (wallIter != this->wallDataMappings.end())
@@ -639,17 +1147,17 @@ void LevelData::readMAP1(const uint16_t *map1, const INFFile &inf, WorldType wor
 		else
 		{
 			// Lambda for creating a raised voxel data.
-			auto makeRaisedVoxelData = [worldType, &exeData, map1Voxel, &inf, mostSigByte, x, z]()
+			auto makeRaisedVoxelData = [mapType, &exeData, map1Voxel, &inf, mostSigByte, x, z]()
 			{
 				const uint8_t wallTextureID = map1Voxel & 0x000F;
 				const uint8_t capTextureID = (map1Voxel & 0x00F0) >> 4;
 
 				const int sideID = [&inf, wallTextureID]()
 				{
-					const int *ptr = inf.getBoxSide(wallTextureID);
-					if (ptr != nullptr)
+					const std::optional<int> &id = inf.getBoxSide(wallTextureID);
+					if (id.has_value())
 					{
-						return *ptr;
+						return *id;
 					}
 					else
 					{
@@ -677,10 +1185,10 @@ void LevelData::readMAP1(const uint16_t *map1, const INFFile &inf, WorldType wor
 
 				const int ceilingID = [&inf, capTextureID]()
 				{
-					const int *ptr = inf.getBoxCap(capTextureID);
-					if (ptr != nullptr)
+					const std::optional<int> &id = inf.getBoxCap(capTextureID);
+					if (id.has_value())
 					{
-						return *ptr;
+						return *id;
 					}
 					else
 					{
@@ -694,13 +1202,8 @@ void LevelData::readMAP1(const uint16_t *map1, const INFFile &inf, WorldType wor
 				const int heightIndex = mostSigByte & 0x07;
 				const int thicknessIndex = (mostSigByte & 0x78) >> 3;
 				int baseOffset, baseSize;
-
-				if (worldType == WorldType::City)
-				{
-					baseOffset = wallHeightTables.box1b.at(heightIndex);
-					baseSize = wallHeightTables.box2b.at(thicknessIndex);
-				}
-				else if (worldType == WorldType::Interior)
+				
+				if (mapType == MapType::Interior)
 				{
 					baseOffset = wallHeightTables.box1a.at(heightIndex);
 
@@ -709,7 +1212,12 @@ void LevelData::readMAP1(const uint16_t *map1, const INFFile &inf, WorldType wor
 					baseSize = boxScale.has_value() ?
 						((boxSize * (*boxScale)) / 256) : boxSize;
 				}
-				else if (worldType == WorldType::Wilderness)
+				else if (mapType == MapType::City)
+				{
+					baseOffset = wallHeightTables.box1b.at(heightIndex);
+					baseSize = wallHeightTables.box2b.at(thicknessIndex);
+				}
+				else if (mapType == MapType::Wilderness)
 				{
 					baseOffset = wallHeightTables.box1c.at(heightIndex);
 
@@ -721,17 +1229,12 @@ void LevelData::readMAP1(const uint16_t *map1, const INFFile &inf, WorldType wor
 				else
 				{
 					throw DebugException("Invalid world type \"" +
-						std::to_string(static_cast<int>(worldType)) + "\".");
+						std::to_string(static_cast<int>(mapType)) + "\".");
 				}
 
-				const double yOffset =
-					static_cast<double>(baseOffset) / MIFFile::ARENA_UNITS;
-				const double ySize =
-					static_cast<double>(baseSize) / MIFFile::ARENA_UNITS;
-
-				const double normalizedScale =
-					static_cast<double>(inf.getCeiling().height) /
-					MIFFile::ARENA_UNITS;
+				const double yOffset = static_cast<double>(baseOffset) / MIFUtils::ARENA_UNITS;
+				const double ySize = static_cast<double>(baseSize) / MIFUtils::ARENA_UNITS;
+				const double normalizedScale = static_cast<double>(inf.getCeiling().height) / MIFUtils::ARENA_UNITS;
 				const double yOffsetNormalized = yOffset / normalizedScale;
 				const double ySizeNormalized = ySize / normalizedScale;
 
@@ -740,8 +1243,20 @@ void LevelData::readMAP1(const uint16_t *map1, const INFFile &inf, WorldType wor
 					0.0, 1.0 - yOffsetNormalized - ySizeNormalized);
 				const double vBottom = std::min(vTop + ySizeNormalized, 1.0);
 
-				return VoxelDefinition::makeRaised(sideID, floorID, ceilingID,
-					yOffsetNormalized, ySizeNormalized, vTop, vBottom);
+				const int clampedSideID = ArenaVoxelUtils::clampVoxelTextureID(sideID);
+				const int clampedFloorID = ArenaVoxelUtils::clampVoxelTextureID(floorID);
+				const int clampedCeilingID = ArenaVoxelUtils::clampVoxelTextureID(ceilingID);
+				TextureAssetReference sideTextureAssetRef(
+					ArenaVoxelUtils::getVoxelTextureFilename(clampedSideID, inf),
+					ArenaVoxelUtils::getVoxelTextureSetIndex(clampedSideID, inf));
+				TextureAssetReference floorTextureAssetRef(
+					ArenaVoxelUtils::getVoxelTextureFilename(clampedFloorID, inf),
+					ArenaVoxelUtils::getVoxelTextureSetIndex(clampedFloorID, inf));
+				TextureAssetReference ceilingTextureAssetRef(
+					ArenaVoxelUtils::getVoxelTextureFilename(clampedCeilingID, inf),
+					ArenaVoxelUtils::getVoxelTextureSetIndex(clampedCeilingID, inf));
+				return VoxelDefinition::makeRaised(std::move(sideTextureAssetRef), std::move(floorTextureAssetRef),
+					std::move(ceilingTextureAssetRef), yOffsetNormalized, ySizeNormalized, vTop, vBottom);
 			};
 
 			const int index = this->voxelGrid.addVoxelDef(makeRaisedVoxelData());
@@ -750,17 +1265,36 @@ void LevelData::readMAP1(const uint16_t *map1, const INFFile &inf, WorldType wor
 		}
 	};
 
-	// Lambda for creating type 0x9 voxel data.
-	auto makeType9VoxelData = [](uint16_t map1Voxel)
+	// Lambda for obtaining the voxel data index of a type 0x9 voxel.
+	auto getType9DataIndex = [this, &inf, &findWallMapping](uint16_t map1Voxel)
 	{
-		const int textureIndex = (map1Voxel & 0x00FF) - 1;
-		const bool collider = (map1Voxel & 0x0100) == 0;
-		return VoxelDefinition::makeTransparentWall(textureIndex, collider);
+		const auto wallIter = findWallMapping(map1Voxel);
+		if (wallIter != this->wallDataMappings.end())
+		{
+			return wallIter->second;
+		}
+		else
+		{
+			// Lambda for creating type 0x9 voxel data.
+			auto makeType9VoxelData = [&inf, map1Voxel]()
+			{
+				const int textureIndex = (map1Voxel & 0x00FF) - 1;
+				const int clampedTextureID = ArenaVoxelUtils::clampVoxelTextureID(textureIndex);
+				TextureAssetReference textureAssetRef(
+					ArenaVoxelUtils::getVoxelTextureFilename(clampedTextureID, inf),
+					ArenaVoxelUtils::getVoxelTextureSetIndex(clampedTextureID, inf));
+				const bool collider = (map1Voxel & 0x0100) == 0;
+				return VoxelDefinition::makeTransparentWall(std::move(textureAssetRef), collider);
+			};
+
+			const int index = this->voxelGrid.addVoxelDef(makeType9VoxelData());
+			this->wallDataMappings.push_back(std::make_pair(map1Voxel, index));
+			return index;
+		}
 	};
 
 	// Lambda for obtaining the voxel data index of a type 0xA voxel.
-	auto getTypeADataIndex = [this, worldType, &findWallMapping](
-		uint16_t map1Voxel, int textureIndex)
+	auto getTypeADataIndex = [this, &inf, mapType, &findWallMapping](uint16_t map1Voxel, int textureIndex)
 	{
 		const auto wallIter = findWallMapping(map1Voxel);
 		if (wallIter != this->wallDataMappings.end())
@@ -770,15 +1304,15 @@ void LevelData::readMAP1(const uint16_t *map1, const INFFile &inf, WorldType wor
 		else
 		{
 			// Lambda for creating type 0xA voxel data.
-			auto makeTypeAVoxelData = [worldType, map1Voxel, textureIndex]()
+			auto makeTypeAVoxelData = [&inf, mapType, map1Voxel, textureIndex]()
 			{
-				const double yOffset = [worldType, map1Voxel]()
+				const double yOffset = [mapType, map1Voxel]()
 				{
 					const int baseOffset = (map1Voxel & 0x0E00) >> 9;
-					const int fullOffset = (worldType == WorldType::Interior) ?
+					const int fullOffset = (mapType == MapType::Interior) ?
 						(baseOffset * 8) : ((baseOffset * 32) - 8);
 
-					return static_cast<double>(fullOffset) / MIFFile::ARENA_UNITS;
+					return static_cast<double>(fullOffset) / MIFUtils::ARENA_UNITS;
 				}();
 
 				const bool collider = (map1Voxel & 0x0100) != 0;
@@ -789,31 +1323,34 @@ void LevelData::readMAP1(const uint16_t *map1, const INFFile &inf, WorldType wor
 				// graphics and gates are type 0xA colliders, I believe.
 				const bool flipped = collider;
 
-				const VoxelFacing facing = [map1Voxel]()
+				const VoxelFacing2D facing = [map1Voxel]()
 				{
 					// Orientation is a multiple of 4 (0, 4, 8, C), where 0 is north
 					// and C is east. It is stored in two bits above the texture index.
 					const int orientation = (map1Voxel & 0x00C0) >> 4;
 					if (orientation == 0x0)
 					{
-						return VoxelFacing::PositiveX;
+						return VoxelFacing2D::NegativeX;
 					}
 					else if (orientation == 0x4)
 					{
-						return VoxelFacing::NegativeZ;
+						return VoxelFacing2D::PositiveZ;
 					}
 					else if (orientation == 0x8)
 					{
-						return VoxelFacing::NegativeX;
+						return VoxelFacing2D::PositiveX;
 					}
 					else
 					{
-						return VoxelFacing::PositiveZ;
+						return VoxelFacing2D::NegativeZ;
 					}
 				}();
 
-				return VoxelDefinition::makeEdge(
-					textureIndex, yOffset, collider, flipped, facing);
+				const int clampedTextureID = ArenaVoxelUtils::clampVoxelTextureID(textureIndex);
+				TextureAssetReference textureAssetRef(
+					ArenaVoxelUtils::getVoxelTextureFilename(clampedTextureID, inf),
+					ArenaVoxelUtils::getVoxelTextureSetIndex(clampedTextureID, inf));
+				return VoxelDefinition::makeEdge(std::move(textureAssetRef), yOffset, collider, flipped, facing);
 			};
 
 			const int index = this->voxelGrid.addVoxelDef(makeTypeAVoxelData());
@@ -822,49 +1359,88 @@ void LevelData::readMAP1(const uint16_t *map1, const INFFile &inf, WorldType wor
 		}
 	};
 
-	// Lambda for creating type 0xB voxel data.
-	auto makeTypeBVoxelData = [](uint16_t map1Voxel)
+	// Lambda for obtaining the voxel data index of a type 0xB voxel.
+	auto getTypeBDataIndex = [this, &inf, &findWallMapping](uint16_t map1Voxel)
 	{
-		const int textureIndex = (map1Voxel & 0x003F) - 1;
-		const VoxelDefinition::DoorData::Type doorType = [map1Voxel]()
+		const auto wallIter = findWallMapping(map1Voxel);
+		if (wallIter != this->wallDataMappings.end())
 		{
-			const int type = (map1Voxel & 0x00C0) >> 4;
-			if (type == 0x0)
+			return wallIter->second;
+		}
+		else
+		{
+			// Lambda for creating type 0xB voxel data.
+			auto makeTypeBVoxelData = [&inf, map1Voxel]()
 			{
-				return VoxelDefinition::DoorData::Type::Swinging;
-			}
-			else if (type == 0x4)
-			{
-				return VoxelDefinition::DoorData::Type::Sliding;
-			}
-			else if (type == 0x8)
-			{
-				return VoxelDefinition::DoorData::Type::Raising;
-			}
-			else
-			{
-				// I don't believe any doors in Arena split (but they are
-				// supported by the engine).
-				DebugUnhandledReturnMsg(
-					VoxelDefinition::DoorData::Type, std::to_string(type));
-			}
-		}();
+				const int textureIndex = (map1Voxel & 0x003F) - 1;
+				const ArenaTypes::DoorType doorType = [map1Voxel]()
+				{
+					const int type = (map1Voxel & 0x00C0) >> 4;
+					if (type == 0x0)
+					{
+						return ArenaTypes::DoorType::Swinging;
+					}
+					else if (type == 0x4)
+					{
+						return ArenaTypes::DoorType::Sliding;
+					}
+					else if (type == 0x8)
+					{
+						return ArenaTypes::DoorType::Raising;
+					}
+					else
+					{
+						// I don't believe any doors in Arena split (but they are
+						// supported by the engine).
+						DebugUnhandledReturnMsg(ArenaTypes::DoorType, std::to_string(type));
+					}
+				}();
 
-		return VoxelDefinition::makeDoor(textureIndex, doorType);
+				const int clampedTextureID = ArenaVoxelUtils::clampVoxelTextureID(textureIndex);
+				TextureAssetReference textureAssetRef(
+					ArenaVoxelUtils::getVoxelTextureFilename(clampedTextureID, inf),
+					ArenaVoxelUtils::getVoxelTextureSetIndex(clampedTextureID, inf));
+				return VoxelDefinition::makeDoor(std::move(textureAssetRef), doorType);
+			};
+
+			const int index = this->voxelGrid.addVoxelDef(makeTypeBVoxelData());
+			this->wallDataMappings.push_back(std::make_pair(map1Voxel, index));
+			return index;
+		}
 	};
 
-	// Lambda for creating type 0xD voxel data.
-	auto makeTypeDVoxelData = [](uint16_t map1Voxel)
+	// Lambda for obtaining the voxel data index of a type 0xD voxel.
+	auto getTypeDDataIndex = [this, &inf, &findWallMapping](uint16_t map1Voxel)
 	{
-		const int textureIndex = (map1Voxel & 0x00FF) - 1;
-		const bool isRightDiag = (map1Voxel & 0x0100) == 0;
-		return VoxelDefinition::makeDiagonal(textureIndex, isRightDiag);
+		const auto wallIter = findWallMapping(map1Voxel);
+		if (wallIter != this->wallDataMappings.end())
+		{
+			return wallIter->second;
+		}
+		else
+		{
+			// Lambda for creating type 0xD voxel data.
+			auto makeTypeDVoxelData = [&inf, map1Voxel]()
+			{
+				const int textureIndex = (map1Voxel & 0x00FF) - 1;
+				const int clampedTextureID = ArenaVoxelUtils::clampVoxelTextureID(textureIndex);
+				TextureAssetReference textureAssetRef(
+					ArenaVoxelUtils::getVoxelTextureFilename(clampedTextureID, inf),
+					ArenaVoxelUtils::getVoxelTextureSetIndex(clampedTextureID, inf));
+				const bool isRightDiag = (map1Voxel & 0x0100) == 0;
+				return VoxelDefinition::makeDiagonal(std::move(textureAssetRef), isRightDiag);
+			};
+
+			const int index = this->voxelGrid.addVoxelDef(makeTypeDVoxelData());
+			this->wallDataMappings.push_back(std::make_pair(map1Voxel, index));
+			return index;
+		}
 	};
 
 	// Write the voxel IDs into the voxel grid.
-	for (int x = 0; x < gridWidth; x++)
+	for (SNInt x = 0; x < gridWidth; x++)
 	{
-		for (int z = 0; z < gridDepth; z++)
+		for (WEInt z = 0; z < gridDepth; z++)
 		{
 			const uint16_t map1Voxel = getMap1Voxel(x, z);
 
@@ -882,7 +1458,7 @@ void LevelData::readMAP1(const uint16_t *map1, const INFFile &inf, WorldType wor
 					if (voxelIsSolid)
 					{
 						// Regular solid wall.
-						const int dataIndex = getWallDataIndex(map1Voxel, mostSigByte);
+						const int dataIndex = getWallDataIndex(map1Voxel, mostSigByte, x, z);
 						this->setVoxel(x, 1, z, dataIndex);
 					}
 					else
@@ -901,15 +1477,15 @@ void LevelData::readMAP1(const uint16_t *map1, const INFFile &inf, WorldType wor
 				if (mostSigNibble == 0x8)
 				{
 					// The lower byte determines the index of a FLAT for an object.
-					const uint8_t flatIndex = map1Voxel & 0x00FF;
-					this->addFlatInstance(flatIndex, Int2(x, z));
+					const ArenaTypes::FlatIndex flatIndex = map1Voxel & 0x00FF;
+					this->addFlatInstance(flatIndex, NewInt2(x, z));
 				}
 				else if (mostSigNibble == 0x9)
 				{
 					// Transparent block with 1-sided texture on all sides, such as wooden 
 					// arches in dungeons. These do not have back-faces (especially when 
 					// standing in the voxel itself).
-					const int dataIndex = getDataIndex(map1Voxel, makeType9VoxelData);
+					const int dataIndex = getType9DataIndex(map1Voxel);
 					this->setVoxel(x, 1, z, dataIndex);
 				}
 				else if (mostSigNibble == 0xA)
@@ -929,7 +1505,7 @@ void LevelData::readMAP1(const uint16_t *map1, const INFFile &inf, WorldType wor
 				else if (mostSigNibble == 0xB)
 				{
 					// Door voxel.
-					const int dataIndex = getDataIndex(map1Voxel, makeTypeBVoxelData);
+					const int dataIndex = getTypeBDataIndex(map1Voxel);
 					this->setVoxel(x, 1, z, dataIndex);
 				}
 				else if (mostSigNibble == 0xC)
@@ -940,7 +1516,7 @@ void LevelData::readMAP1(const uint16_t *map1, const INFFile &inf, WorldType wor
 				else if (mostSigNibble == 0xD)
 				{
 					// Diagonal wall. Its type is determined by the nineth bit.
-					const int dataIndex = getDataIndex(map1Voxel, makeTypeDVoxelData);
+					const int dataIndex = getTypeDDataIndex(map1Voxel);
 					this->setVoxel(x, 1, z, dataIndex);
 				}
 			}
@@ -948,36 +1524,16 @@ void LevelData::readMAP1(const uint16_t *map1, const INFFile &inf, WorldType wor
 	}
 }
 
-void LevelData::readMAP2(const uint16_t *map2, const INFFile &inf, int gridWidth, int gridDepth)
+void LevelData::readMAP2(const BufferView2D<const ArenaTypes::VoxelID> &map2, const INFFile &inf)
 {
-	// Lambda for obtaining a two-byte MAP2 voxel.
-	auto getMap2Voxel = [map2, gridWidth, gridDepth](int x, int z)
-	{
-		// Read voxel data in reverse order.
-		const int index = (((gridDepth - 1) - z) * 2) + ((((gridWidth - 1) - x) * 2) * gridDepth);
-		const uint16_t voxel = Bytes::getLE16(reinterpret_cast<const uint8_t*>(map2) + index);
-		return voxel;
-	};
+	const SNInt gridWidth = map2.getHeight();
+	const WEInt gridDepth = map2.getWidth();
 
-	// Lambda for getting the number of stories a MAP2 voxel takes up.
-	auto getMap2VoxelHeight = [](uint16_t map2Voxel)
+	// Lambda for obtaining a two-byte MAP2 voxel.
+	auto getMap2Voxel = [&map2, gridWidth, gridDepth](SNInt x, WEInt z)
 	{
-		if ((map2Voxel & 0x80) == 0x80)
-		{
-			return 2;
-		}
-		else if ((map2Voxel & 0x8000) == 0x8000)
-		{
-			return 3;
-		}
-		else if ((map2Voxel & 0x8080) == 0x8080)
-		{
-			return 4;
-		}
-		else
-		{
-			return 1;
-		}
+		const uint16_t voxel = map2.get(z, x);
+		return voxel;
 	};
 
 	// Lambda for obtaining the voxel data index for a MAP2 voxel.
@@ -997,27 +1553,28 @@ void LevelData::readMAP2(const uint16_t *map2, const INFFile &inf, int gridWidth
 		else
 		{
 			const int textureIndex = (map2Voxel & 0x007F) - 1;
-			const int *menuID = nullptr;
+			const int clampedTextureID = ArenaVoxelUtils::clampVoxelTextureID(textureIndex);
+			const TextureAssetReference textureAssetRef(
+				ArenaVoxelUtils::getVoxelTextureFilename(clampedTextureID, inf),
+				ArenaVoxelUtils::getVoxelTextureSetIndex(clampedTextureID, inf));
 			const int index = this->voxelGrid.addVoxelDef(VoxelDefinition::makeWall(
-				textureIndex, textureIndex, textureIndex, menuID,
-				VoxelDefinition::WallData::Type::Solid));
+				TextureAssetReference(textureAssetRef), TextureAssetReference(textureAssetRef),
+				TextureAssetReference(textureAssetRef)));
 			this->map2DataMappings.push_back(std::make_pair(map2Voxel, index));
 			return index;
 		}
 	};
 
 	// Write the voxel IDs into the voxel grid.
-	for (int x = 0; x < gridWidth; x++)
+	for (SNInt x = 0; x < gridWidth; x++)
 	{
-		for (int z = 0; z < gridDepth; z++)
+		for (WEInt z = 0; z < gridDepth; z++)
 		{
 			const uint16_t map2Voxel = getMap2Voxel(x, z);
 
 			if (map2Voxel != 0)
 			{
-				// Number of stories the MAP2 voxel occupies.
-				const int height = getMap2VoxelHeight(map2Voxel);
-
+				const int height = ArenaLevelUtils::getMap2VoxelHeight(map2Voxel);
 				const int dataIndex = getMap2DataIndex(map2Voxel);
 
 				for (int y = 2; y < (height + 2); y++)
@@ -1029,7 +1586,7 @@ void LevelData::readMAP2(const uint16_t *map2, const INFFile &inf, int gridWidth
 	}
 }
 
-void LevelData::readCeiling(const INFFile &inf, int width, int depth)
+void LevelData::readCeiling(const INFFile &inf)
 {
 	const INFFile::CeilingData &ceiling = inf.getCeiling();
 
@@ -1042,43 +1599,78 @@ void LevelData::readCeiling(const INFFile &inf, int width, int depth)
 	}();
 
 	// Define the ceiling voxel data.
-	const int index = this->voxelGrid.addVoxelDef(VoxelDefinition::makeCeiling(ceilingIndex));
+	const int clampedTextureID = ArenaVoxelUtils::clampVoxelTextureID(ceilingIndex);
+	TextureAssetReference textureAssetRef(
+		ArenaVoxelUtils::getVoxelTextureFilename(clampedTextureID, inf),
+		ArenaVoxelUtils::getVoxelTextureSetIndex(clampedTextureID, inf));
+	const int index = this->voxelGrid.addVoxelDef(VoxelDefinition::makeCeiling(std::move(textureAssetRef)));
 
 	// Set all the ceiling voxels.
-	for (int x = 0; x < width; x++)
+	const SNInt gridWidth = this->voxelGrid.getWidth();
+	const WEInt gridDepth = this->voxelGrid.getDepth();
+	for (SNInt x = 0; x < gridWidth; x++)
 	{
-		for (int z = 0; z < depth; z++)
+		for (WEInt z = 0; z < gridDepth; z++)
 		{
 			this->setVoxel(x, 2, z, index);
 		}
 	}
 }
 
-void LevelData::readLocks(const std::vector<ArenaTypes::MIFLock> &locks, int width, int depth)
+void LevelData::readLocks(const BufferView<const ArenaTypes::MIFLock> &locks)
 {
-	for (const auto &lock : locks)
+	for (int i = 0; i < locks.getCount(); i++)
 	{
-		const NewInt2 lockPosition = VoxelUtils::originalVoxelToNewVoxel(
-			OriginalInt2(lock.x, lock.y), width, depth);
-		this->locks.insert(std::make_pair(
-			lockPosition, LevelData::Lock(lockPosition, lock.lockLevel)));
+		const auto &lock = locks.get(i);
+		const NewInt2 lockPosition = VoxelUtils::originalVoxelToNewVoxel(OriginalInt2(lock.x, lock.y));
+		this->locks.insert(std::make_pair(lockPosition, LevelData::Lock(lockPosition, lock.lockLevel)));
 	}
 }
 
-void LevelData::getAdjacentVoxelIDs(const Int3 &voxel, uint16_t *outNorthID, uint16_t *outSouthID,
+void LevelData::readTriggers(const BufferView<const ArenaTypes::MIFTrigger> &triggers, const INFFile &inf)
+{
+	DebugAssert(this->isInterior);
+
+	for (int i = 0; i < triggers.getCount(); i++)
+	{
+		const auto &trigger = triggers.get(i);
+
+		// Transform the voxel coordinates from the Arena layout to the new layout.
+		const NewInt2 voxel = VoxelUtils::originalVoxelToNewVoxel(OriginalInt2(trigger.x, trigger.y));
+
+		// There can be a text trigger and sound trigger in the same voxel.
+		const bool isTextTrigger = trigger.textIndex != -1;
+		const bool isSoundTrigger = trigger.soundIndex != -1;
+
+		// Make sure the text index points to a text value (i.e., not a key or riddle).
+		if (isTextTrigger && inf.hasTextIndex(trigger.textIndex))
+		{
+			const INFFile::TextData &textData = inf.getText(trigger.textIndex);
+			this->interior.textTriggers.emplace(std::make_pair(
+				voxel, TextTrigger(textData.text, textData.displayedOnce)));
+		}
+
+		if (isSoundTrigger)
+		{
+			this->interior.soundTriggers.emplace(std::make_pair(voxel, inf.getSound(trigger.soundIndex)));
+		}
+	}
+}
+
+void LevelData::getAdjacentVoxelIDs(const NewInt3 &voxel, uint16_t *outNorthID, uint16_t *outSouthID,
 	uint16_t *outEastID, uint16_t *outWestID) const
 {
-	auto getVoxelIdOrAir = [this](const Int3 &voxel)
+	auto getVoxelIdOrAir = [this](const NewInt3 &voxel)
 	{
 		// The voxel is air if outside the grid.
 		return this->voxelGrid.coordIsValid(voxel.x, voxel.y, voxel.z) ?
 			this->voxelGrid.getVoxel(voxel.x, voxel.y, voxel.z) : 0;
 	};
 
-	const Int3 northVoxel(voxel.x + 1, voxel.y, voxel.z);
-	const Int3 southVoxel(voxel.x - 1, voxel.y, voxel.z);
-	const Int3 eastVoxel(voxel.x, voxel.y, voxel.z + 1);
-	const Int3 westVoxel(voxel.x, voxel.y, voxel.z - 1);
+	const NewInt3 northVoxel(voxel.x - 1, voxel.y, voxel.z);
+	const NewInt3 southVoxel(voxel.x + 1, voxel.y, voxel.z);
+	const NewInt3 eastVoxel(voxel.x, voxel.y, voxel.z - 1);
+	const NewInt3 westVoxel(voxel.x, voxel.y, voxel.z + 1);
 
 	if (outNorthID != nullptr)
 	{
@@ -1101,7 +1693,381 @@ void LevelData::getAdjacentVoxelIDs(const Int3 &voxel, uint16_t *outNorthID, uin
 	}
 }
 
-void LevelData::tryUpdateChasmVoxel(const Int3 &voxel)
+ArenaLevelUtils::MenuNamesList LevelData::generateBuildingNames(const LocationDefinition &locationDef,
+	const ProvinceDefinition &provinceDef, ArenaRandom &random, const VoxelGrid &voxelGrid,
+	const LevelData::Transitions &transitions, const BinaryAssetLibrary &binaryAssetLibrary,
+	const TextAssetLibrary &textAssetLibrary)
+{
+	const auto &exeData = binaryAssetLibrary.getExeData();
+	const LocationDefinition::CityDefinition &cityDef = locationDef.getCityDefinition();
+
+	uint32_t citySeed = cityDef.citySeed;
+	const Int2 localCityPoint = LocationUtils::getLocalCityPoint(citySeed);
+
+	ArenaLevelUtils::MenuNamesList menuNames;
+
+	// Lambda for looping through main-floor voxels and generating names for *MENU blocks that
+	// match the given menu type.
+	auto generateNames = [&provinceDef, &citySeed, &random, &voxelGrid, &transitions, &textAssetLibrary,
+		&exeData, &cityDef, &localCityPoint, &menuNames](ArenaTypes::MenuType menuType)
+	{
+		if ((menuType == ArenaTypes::MenuType::Equipment) ||
+			(menuType == ArenaTypes::MenuType::Temple))
+		{
+			citySeed = (localCityPoint.x << 16) + localCityPoint.y;
+			random.srand(citySeed);
+		}
+
+		std::vector<int> seen;
+		auto hashInSeen = [&seen](int hash)
+		{
+			return std::find(seen.begin(), seen.end(), hash) != seen.end();
+		};
+
+		// Lambdas for creating tavern, equipment store, and temple building names.
+		auto createTavernName = [&exeData, &cityDef](int m, int n)
+		{
+			const auto &tavernPrefixes = exeData.cityGen.tavernPrefixes;
+			const auto &tavernSuffixes = cityDef.coastal ?
+				exeData.cityGen.tavernMarineSuffixes : exeData.cityGen.tavernSuffixes;
+			return tavernPrefixes.at(m) + ' ' + tavernSuffixes.at(n);
+		};
+
+		auto createEquipmentName = [&provinceDef, &random, &textAssetLibrary, &exeData,
+			&cityDef](int m, int n, SNInt x, WEInt z)
+		{
+			const auto &equipmentPrefixes = exeData.cityGen.equipmentPrefixes;
+			const auto &equipmentSuffixes = exeData.cityGen.equipmentSuffixes;
+
+			// Equipment store names can have variables in them.
+			std::string str = equipmentPrefixes.at(m) + ' ' + equipmentSuffixes.at(n);
+
+			// Replace %ct with city type name.
+			size_t index = str.find("%ct");
+			if (index != std::string::npos)
+			{
+				const std::string_view cityTypeName = cityDef.typeDisplayName;
+				str.replace(index, 3, cityTypeName);
+			}
+
+			// Replace %ef with generated male first name from (y<<16)+x seed. Use a local RNG for
+			// modifications to building names. Swap and reverse the XZ dimensions so they fit the
+			// original XY values in Arena.
+			index = str.find("%ef");
+			if (index != std::string::npos)
+			{
+				ArenaRandom nameRandom((x << 16) + z);
+				const bool isMale = true;
+				const std::string maleFirstName = [&provinceDef, &textAssetLibrary, isMale, &nameRandom]()
+				{
+					const std::string name = textAssetLibrary.generateNpcName(
+						provinceDef.getRaceID(), isMale, nameRandom);
+					const std::string firstName = String::split(name).front();
+					return firstName;
+				}();
+
+				str.replace(index, 3, maleFirstName);
+			}
+
+			// Replace %n with generated male name from (x<<16)+y seed.
+			index = str.find("%n");
+			if (index != std::string::npos)
+			{
+				ArenaRandom nameRandom((z << 16) + x);
+				const bool isMale = true;
+				const std::string maleName = textAssetLibrary.generateNpcName(
+					provinceDef.getRaceID(), isMale, nameRandom);
+				str.replace(index, 2, maleName);
+			}
+
+			return str;
+		};
+
+		auto createTempleName = [&exeData](int model, int n)
+		{
+			const auto &templePrefixes = exeData.cityGen.templePrefixes;
+			const auto &temple1Suffixes = exeData.cityGen.temple1Suffixes;
+			const auto &temple2Suffixes = exeData.cityGen.temple2Suffixes;
+			const auto &temple3Suffixes = exeData.cityGen.temple3Suffixes;
+
+			const std::string &templeSuffix = [&temple1Suffixes, &temple2Suffixes,
+				&temple3Suffixes, model, n]() -> const std::string&
+			{
+				if (model == 0)
+				{
+					return temple1Suffixes.at(n);
+				}
+				else if (model == 1)
+				{
+					return temple2Suffixes.at(n);
+				}
+				else
+				{
+					return temple3Suffixes.at(n);
+				}
+			}();
+
+			// No extra whitespace needed, I think?
+			return templePrefixes.at(model) + templeSuffix;
+		};
+
+		// The lambda called for each main-floor voxel in the area.
+		auto tryGenerateBlockName = [menuType, &random, &voxelGrid, &transitions, &menuNames, &seen,
+			&hashInSeen, &createTavernName, &createEquipmentName, &createTempleName](SNInt x, WEInt z)
+		{
+			// See if the current voxel is a *MENU block and matches the target menu type.
+			const bool matchesTargetType = [x, z, menuType, &voxelGrid, &transitions]()
+			{
+				const uint16_t voxelID = voxelGrid.getVoxel(x, 1, z);
+				const VoxelDefinition &voxelDef = voxelGrid.getVoxelDef(voxelID);
+				if (voxelDef.type != ArenaTypes::VoxelType::Wall)
+				{
+					return false;
+				}
+
+				const auto iter = transitions.find(NewInt2(x, z));
+				if (iter == transitions.end())
+				{
+					return false;
+				}
+
+				const LevelData::Transition &transition = iter->second;
+				if (transition.getType() != LevelData::Transition::Type::Menu)
+				{
+					return false;
+				}
+
+				const LevelData::Transition::Menu &transitionMenu = transition.getMenu();
+				return ArenaVoxelUtils::getMenuType(transitionMenu.id, MapType::City) == menuType;
+			}();
+
+			if (matchesTargetType)
+			{
+				// Get the *MENU block's display name.
+				int hash;
+				std::string name;
+
+				if (menuType == ArenaTypes::MenuType::Tavern)
+				{
+					// Tavern.
+					int m, n;
+					do
+					{
+						m = random.next() % 23;
+						n = random.next() % 23;
+						hash = (m << 8) + n;
+					} while (hashInSeen(hash));
+
+					name = createTavernName(m, n);
+				}
+				else if (menuType == ArenaTypes::MenuType::Equipment)
+				{
+					// Equipment store.
+					int m, n;
+					do
+					{
+						m = random.next() % 20;
+						n = random.next() % 10;
+						hash = (m << 8) + n;
+					} while (hashInSeen(hash));
+
+					name = createEquipmentName(m, n, x, z);
+				}
+				else
+				{
+					// Temple.
+					int model, n;
+					do
+					{
+						model = random.next() % 3;
+						const std::array<int, 3> ModelVars = { 5, 9, 10 };
+						const int vars = ModelVars.at(model);
+						n = random.next() % vars;
+						hash = (model << 8) + n;
+					} while (hashInSeen(hash));
+
+					name = createTempleName(model, n);
+				}
+
+				menuNames.push_back(std::make_pair(NewInt2(x, z), std::move(name)));
+				seen.push_back(hash);
+			}
+		};
+
+		// Start at the top-right corner of the map, running right to left and top to bottom.
+		for (SNInt x = 0; x < voxelGrid.getWidth(); x++)
+		{
+			for (WEInt z = 0; z < voxelGrid.getDepth(); z++)
+			{
+				tryGenerateBlockName(x, z);
+			}
+		}
+
+		// Fix some edge cases used with the main quest.
+		if ((menuType == ArenaTypes::MenuType::Temple) &&
+			cityDef.hasMainQuestTempleOverride)
+		{
+			const auto &mainQuestTempleOverride = cityDef.mainQuestTempleOverride;
+			const int modelIndex = mainQuestTempleOverride.modelIndex;
+			const int suffixIndex = mainQuestTempleOverride.suffixIndex;
+
+			// Added an index variable since the original game seems to store its menu names in a
+			// way other than with a vector like this solution is using.
+			const int menuNamesIndex = mainQuestTempleOverride.menuNamesIndex;
+
+			DebugAssertIndex(menuNames, menuNamesIndex);
+			menuNames[menuNamesIndex].second = createTempleName(modelIndex, suffixIndex);
+		}
+	};
+
+	generateNames(ArenaTypes::MenuType::Tavern);
+	generateNames(ArenaTypes::MenuType::Equipment);
+	generateNames(ArenaTypes::MenuType::Temple);
+	return menuNames;
+}
+
+ArenaLevelUtils::MenuNamesList LevelData::generateWildChunkBuildingNames(const VoxelGrid &voxelGrid,
+	const LevelData::Transitions &transitions, const ExeData &exeData)
+{
+	ArenaLevelUtils::MenuNamesList menuNames;
+
+	// Lambda for looping through main-floor voxels and generating names for *MENU blocks that
+	// match the given menu type.
+	auto generateNames = [&voxelGrid, &transitions, &exeData, &menuNames](int wildX, int wildY,
+		ArenaTypes::MenuType menuType)
+	{
+		const uint32_t wildChunkSeed = ArenaWildUtils::makeWildChunkSeed(wildX, wildY);
+
+		// Don't need hashInSeen() for the wilderness.
+
+		// Lambdas for creating tavern and temple building names.
+		auto createTavernName = [&exeData](int m, int n)
+		{
+			const auto &tavernPrefixes = exeData.cityGen.tavernPrefixes;
+			const auto &tavernSuffixes = exeData.cityGen.tavernSuffixes;
+			return tavernPrefixes.at(m) + ' ' + tavernSuffixes.at(n);
+		};
+
+		auto createTempleName = [&exeData](int model, int n)
+		{
+			const auto &templePrefixes = exeData.cityGen.templePrefixes;
+			const auto &temple1Suffixes = exeData.cityGen.temple1Suffixes;
+			const auto &temple2Suffixes = exeData.cityGen.temple2Suffixes;
+			const auto &temple3Suffixes = exeData.cityGen.temple3Suffixes;
+
+			const std::string &templeSuffix = [&temple1Suffixes, &temple2Suffixes,
+				&temple3Suffixes, model, n]() -> const std::string&
+			{
+				if (model == 0)
+				{
+					return temple1Suffixes.at(n);
+				}
+				else if (model == 1)
+				{
+					return temple2Suffixes.at(n);
+				}
+				else
+				{
+					return temple3Suffixes.at(n);
+				}
+			}();
+
+			// No extra whitespace needed, I think?
+			return templePrefixes.at(model) + templeSuffix;
+		};
+
+		// The lambda called for each main-floor voxel in the area.
+		auto tryGenerateBlockName = [&voxelGrid, &transitions, &menuNames, wildX, wildY, menuType,
+			wildChunkSeed, &createTavernName, &createTempleName](SNInt x, WEInt z)
+		{
+			ArenaRandom random(wildChunkSeed);
+
+			// Make sure the coordinate math is done in the new coordinate system.
+			const OriginalInt2 relativeOrigin(
+				((RMDFile::DEPTH - 1) - wildX) * RMDFile::DEPTH,
+				((RMDFile::WIDTH - 1) - wildY) * RMDFile::WIDTH);
+			const NewInt2 dstPoint(
+				relativeOrigin.y + (RMDFile::WIDTH - 1 - x),
+				relativeOrigin.x + (RMDFile::DEPTH - 1 - z));
+
+			// See if the current voxel is a *MENU block and matches the target menu type.
+			const bool matchesTargetType = [&voxelGrid, &transitions, menuType, &dstPoint]()
+			{
+				const uint16_t voxelID = voxelGrid.getVoxel(dstPoint.x, 1, dstPoint.y);
+				const VoxelDefinition &voxelDef = voxelGrid.getVoxelDef(voxelID);
+				if (voxelDef.type != ArenaTypes::VoxelType::Wall)
+				{
+					return false;
+				}
+
+				const auto iter = transitions.find(dstPoint);
+				if (iter == transitions.end())
+				{
+					return false;
+				}
+
+				const LevelData::Transition &transition = iter->second;
+				if (transition.getType() != LevelData::Transition::Type::Menu)
+				{
+					return false;
+				}
+
+				const LevelData::Transition::Menu &transitionMenu = transition.getMenu();
+				constexpr MapType mapType = MapType::Wilderness;
+				return ArenaVoxelUtils::getMenuType(transitionMenu.id, mapType) == menuType;
+			}();
+
+			if (matchesTargetType)
+			{
+				// Get the *MENU block's display name.
+				const std::string name = [menuType, &random, &createTavernName, &createTempleName]()
+				{
+					if (menuType == ArenaTypes::MenuType::Tavern)
+					{
+						// Tavern.
+						const int m = random.next() % 23;
+						const int n = random.next() % 23;
+						return createTavernName(m, n);
+					}
+					else
+					{
+						// Temple.
+						const int model = random.next() % 3;
+						constexpr std::array<int, 3> ModelVars = { 5, 9, 10 };
+						const int vars = ModelVars.at(model);
+						const int n = random.next() % vars;
+						return createTempleName(model, n);
+					}
+				}();
+
+				menuNames.push_back(std::make_pair(dstPoint, std::move(name)));
+			}
+		};
+
+		// Iterate blocks in the chunk in any order. They are order-independent in the wild.
+		for (SNInt x = 0; x < RMDFile::DEPTH; x++)
+		{
+			for (WEInt z = 0; z < RMDFile::WIDTH; z++)
+			{
+				tryGenerateBlockName(x, z);
+			}
+		}
+	};
+
+	// Iterate over each wild chunk.
+	for (int y = 0; y < ArenaWildUtils::WILD_HEIGHT; y++)
+	{
+		for (int x = 0; x < ArenaWildUtils::WILD_WIDTH; x++)
+		{
+			generateNames(x, y, ArenaTypes::MenuType::Tavern);
+			generateNames(x, y, ArenaTypes::MenuType::Temple);
+		}
+	}
+
+	return menuNames;
+}
+
+void LevelData::tryUpdateChasmVoxel(const NewInt3 &voxel)
 {
 	// Ignore if outside the grid.
 	if (!this->voxelGrid.coordIsValid(voxel.x, voxel.y, voxel.z))
@@ -1113,12 +2079,10 @@ void LevelData::tryUpdateChasmVoxel(const Int3 &voxel)
 	const VoxelDefinition &voxelDef = this->voxelGrid.getVoxelDef(voxelID);
 
 	// Ignore if not a chasm (no faces to update).
-	if (voxelDef.dataType != VoxelDataType::Chasm)
+	if (voxelDef.type != ArenaTypes::VoxelType::Chasm)
 	{
 		return;
 	}
-
-	const VoxelDefinition::ChasmData &chasmData = voxelDef.chasm;
 
 	// Query surrounding voxels to see which faces should be set.
 	uint16_t northID, southID, eastID, westID;
@@ -1129,46 +2093,71 @@ void LevelData::tryUpdateChasmVoxel(const Int3 &voxel)
 	const VoxelDefinition &eastDef = this->voxelGrid.getVoxelDef(eastID);
 	const VoxelDefinition &westDef = this->voxelGrid.getVoxelDef(westID);
 
-	auto voxelDefIsChasm = [](const VoxelDefinition &voxelDef)
+	// Booleans for each face of the new chasm voxel.
+	const bool hasNorthFace = northDef.allowsChasmFace();
+	const bool hasSouthFace = southDef.allowsChasmFace();
+	const bool hasEastFace = eastDef.allowsChasmFace();
+	const bool hasWestFace = westDef.allowsChasmFace();
+
+	// Lambda for creating chasm voxel instance (replaces local variable since this is cleaner
+	// with the below if/else branches and it avoids the assertion in the voxel instance builder).
+	auto makeChasmInst = [&voxel, hasNorthFace, hasEastFace, hasSouthFace, hasWestFace]()
 	{
-		return voxelDef.dataType == VoxelDataType::Chasm;
+		return VoxelInstance::makeChasm(voxel.x, voxel.y, voxel.z, hasNorthFace, hasEastFace,
+			hasSouthFace, hasWestFace);
 	};
 
-	// Booleans for each face of the new chasm voxel.
-	bool hasNorthFace = !voxelDefIsChasm(northDef);
-	bool hasSouthFace = !voxelDefIsChasm(southDef);
-	bool hasEastFace = !voxelDefIsChasm(eastDef);
-	bool hasWestFace = !voxelDefIsChasm(westDef);
-
-	const VoxelDefinition newVoxelDef = VoxelDefinition::makeChasm(
-		chasmData.id, hasNorthFace, hasEastFace, hasSouthFace, hasWestFace, chasmData.type);
-
-	// Find chasm voxel data with the matching faces, adding if missing.
-	const std::optional<uint16_t> optChasmID = this->voxelGrid.findVoxelDef(
-		[&newVoxelDef](const VoxelDefinition &voxelDef)
+	// Add/update chasm state.
+	const ChunkInt2 chunk = VoxelUtils::newVoxelToChunk(NewInt2(voxel.x, voxel.z));
+	VoxelInstanceGroup *voxelInstGroup = this->tryGetVoxelInstances(chunk);
+	const bool shouldAddChasmState = hasNorthFace || hasEastFace || hasSouthFace || hasWestFace;
+	if (voxelInstGroup != nullptr)
 	{
-		if (voxelDef.dataType == VoxelDataType::Chasm)
+		auto groupIter = voxelInstGroup->find(voxel);
+		if ((groupIter == voxelInstGroup->end()) && shouldAddChasmState)
 		{
-			DebugAssert(newVoxelDef.dataType == VoxelDataType::Chasm);
-			const VoxelDefinition::ChasmData &newChasmData = newVoxelDef.chasm;
-			const VoxelDefinition::ChasmData &chasmData = voxelDef.chasm;
-			return chasmData.matches(newChasmData);
+			groupIter = voxelInstGroup->emplace(std::make_pair(voxel, std::vector<VoxelInstance>())).first;
 		}
-		else
+
+		if (groupIter != voxelInstGroup->end())
 		{
-			return false;
+			std::vector<VoxelInstance> &voxelInsts = groupIter->second;
+			const auto voxelIter = std::find_if(voxelInsts.begin(), voxelInsts.end(),
+				[](const VoxelInstance &inst)
+			{
+				return inst.getType() == VoxelInstance::Type::Chasm;
+			});
+
+			if (voxelIter != voxelInsts.end())
+			{
+				if (shouldAddChasmState)
+				{
+					*voxelIter = makeChasmInst();
+				}
+				else
+				{
+					voxelInsts.erase(voxelIter);
+				}
+			}
+			else
+			{
+				if (shouldAddChasmState)
+				{
+					voxelInsts.emplace_back(makeChasmInst());
+				}
+			}
 		}
-	});
-
-	// Use the chasm ID if it exists, or add a new voxel data to the grid and use its ID.
-	const uint16_t actualChasmID = optChasmID.has_value() ?
-		*optChasmID : this->voxelGrid.addVoxelDef(newVoxelDef);
-
-	// Update the chasm's voxel ID in the grid.
-	this->voxelGrid.setVoxel(voxel.x, voxel.y, voxel.z, actualChasmID);
+	}
+	else
+	{
+		if (shouldAddChasmState)
+		{
+			this->addVoxelInstance(makeChasmInst());
+		}
+	}
 }
 
-uint16_t LevelData::getChasmIdFromFadedFloorVoxel(const Int3 &voxel)
+uint16_t LevelData::getChasmIdFromFadedFloorVoxel(const NewInt3 &voxel)
 {
 	DebugAssert(this->voxelGrid.coordIsValid(voxel.x, voxel.y, voxel.z));
 
@@ -1181,64 +2170,61 @@ uint16_t LevelData::getChasmIdFromFadedFloorVoxel(const Int3 &voxel)
 	const VoxelDefinition &eastDef = this->voxelGrid.getVoxelDef(eastID);
 	const VoxelDefinition &westDef = this->voxelGrid.getVoxelDef(westID);
 
-	auto voxelDataIsChasm = [](const VoxelDefinition &voxelDef)
-	{
-		return voxelDef.dataType == VoxelDataType::Chasm;
-	};
-
 	// Booleans for each face of the new chasm voxel.
-	bool hasNorthFace = !voxelDataIsChasm(northDef);
-	bool hasSouthFace = !voxelDataIsChasm(southDef);
-	bool hasEastFace = !voxelDataIsChasm(eastDef);
-	bool hasWestFace = !voxelDataIsChasm(westDef);
+	const bool hasNorthFace = northDef.allowsChasmFace();
+	const bool hasSouthFace = southDef.allowsChasmFace();
+	const bool hasEastFace = eastDef.allowsChasmFace();
+	const bool hasWestFace = westDef.allowsChasmFace();
 
 	// Based on how the original game behaves, it seems to be the chasm type closest to the player,
 	// even dry chasms, that determines what the destroyed floor becomes. This allows for oddities
 	// like creating a dry chasm next to lava, which results in continued oddities like having a
 	// big difference in chasm depth between the two (depending on ceiling height).
-	const VoxelDefinition::ChasmData::Type newChasmType = []()
+	const ArenaTypes::ChasmType newChasmType = []()
 	{
 		// @todo: include player position. If there are no chasms to pick from, then default to
 		// wet chasm.
-		// @todo: getNearestChasmType(const Int3 &voxel)
-		return VoxelDefinition::ChasmData::Type::Wet;
+		// @todo: getNearestChasmType(const NewInt3 &voxel)
+		return ArenaTypes::ChasmType::Wet;
 	}();
 
 	const int newTextureID = [this, newChasmType]()
 	{
-		const int *chasmIndexPtr = nullptr;
+		std::optional<int> chasmIndex;
 
-		// Ask the .INF file what the chasm texture is.
 		switch (newChasmType)
 		{
-		case VoxelDefinition::ChasmData::Type::Dry:
-			chasmIndexPtr = this->inf.getDryChasmIndex();
+		case ArenaTypes::ChasmType::Dry:
+			chasmIndex = this->inf.getDryChasmIndex();
 			break;
-		case VoxelDefinition::ChasmData::Type::Wet:
-			chasmIndexPtr = this->inf.getWetChasmIndex();
+		case ArenaTypes::ChasmType::Wet:
+			chasmIndex = this->inf.getWetChasmIndex();
 			break;
-		case VoxelDefinition::ChasmData::Type::Lava:
-			chasmIndexPtr = this->inf.getLavaChasmIndex();
+		case ArenaTypes::ChasmType::Lava:
+			chasmIndex = this->inf.getLavaChasmIndex();
 			break;
 		default:
 			DebugNotImplementedMsg(std::to_string(static_cast<int>(newChasmType)));
 			break;
 		}
 
-		// Default to whatever the first texture is if one is not found.
-		return (chasmIndexPtr != nullptr) ? *chasmIndexPtr : 0;
+		// Default to the first texture if one is not found.
+		return chasmIndex.has_value() ? *chasmIndex : 0;
 	}();
 
-	const VoxelDefinition newDef = VoxelDefinition::makeChasm(
-		newTextureID, hasNorthFace, hasEastFace, hasSouthFace, hasWestFace, newChasmType);
+	const int clampedTextureID = ArenaVoxelUtils::clampVoxelTextureID(newTextureID);
+	TextureAssetReference textureAssetRef(
+		ArenaVoxelUtils::getVoxelTextureFilename(clampedTextureID, this->inf),
+		ArenaVoxelUtils::getVoxelTextureSetIndex(clampedTextureID, this->inf));
+	const VoxelDefinition newDef = VoxelDefinition::makeChasm(std::move(textureAssetRef), newChasmType);
 
-	// Find chasm voxel data with the matching faces, adding if missing.
+	// Find matching chasm voxel definition, adding if missing.
 	const std::optional<uint16_t> optChasmID = this->voxelGrid.findVoxelDef(
 		[&newDef](const VoxelDefinition &voxelDef)
 	{
-		if (voxelDef.dataType == VoxelDataType::Chasm)
+		if (voxelDef.type == ArenaTypes::VoxelType::Chasm)
 		{
-			DebugAssert(newDef.dataType == VoxelDataType::Chasm);
+			DebugAssert(newDef.type == ArenaTypes::VoxelType::Chasm);
 			const VoxelDefinition::ChasmData &newChasmData = newDef.chasm;
 			const VoxelDefinition::ChasmData &chasmData = voxelDef.chasm;
 			return chasmData.matches(newChasmData);
@@ -1248,6 +2234,64 @@ uint16_t LevelData::getChasmIdFromFadedFloorVoxel(const Int3 &voxel)
 			return false;
 		}
 	});
+
+	// Lambda for creating chasm voxel instance (replaces local variable since this is cleaner
+	// with the below if/else branches and it avoids the assertion in the voxel instance builder).
+	auto makeChasmInst = [&voxel, hasNorthFace, hasEastFace, hasSouthFace, hasWestFace]()
+	{
+		return VoxelInstance::makeChasm(voxel.x, voxel.y, voxel.z, hasNorthFace, hasEastFace,
+			hasSouthFace, hasWestFace);
+	};
+
+	// Add/update chasm state.
+	const ChunkInt2 chunk = VoxelUtils::newVoxelToChunk(NewInt2(voxel.x, voxel.z));
+	VoxelInstanceGroup *voxelInstGroup = this->tryGetVoxelInstances(chunk);
+	const bool shouldAddChasmState = hasNorthFace || hasEastFace || hasSouthFace || hasWestFace;
+	if (voxelInstGroup != nullptr)
+	{
+		auto groupIter = voxelInstGroup->find(voxel);
+		if ((groupIter == voxelInstGroup->end()) && shouldAddChasmState)
+		{
+			groupIter = voxelInstGroup->emplace(std::make_pair(voxel, std::vector<VoxelInstance>())).first;
+		}
+
+		if (groupIter != voxelInstGroup->end())
+		{
+			std::vector<VoxelInstance> &voxelInsts = groupIter->second;
+			const auto iter = std::find_if(voxelInsts.begin(), voxelInsts.end(),
+				[&voxel](const VoxelInstance &inst)
+			{
+				return (inst.getX() == voxel.x) && (inst.getY() == voxel.y) && (inst.getZ() == voxel.z) &&
+					(inst.getType() == VoxelInstance::Type::Chasm);
+			});
+
+			if (iter != voxelInsts.end())
+			{
+				if (shouldAddChasmState)
+				{
+					*iter = makeChasmInst();
+				}
+				else
+				{
+					voxelInsts.erase(iter);
+				}
+			}
+			else
+			{
+				if (shouldAddChasmState)
+				{
+					voxelInsts.emplace_back(makeChasmInst());
+				}
+			}
+		}
+	}
+	else
+	{
+		if (shouldAddChasmState)
+		{
+			this->addVoxelInstance(makeChasmInst());
+		}
+	}
 
 	if (optChasmID.has_value())
 	{
@@ -1260,54 +2304,73 @@ uint16_t LevelData::getChasmIdFromFadedFloorVoxel(const Int3 &voxel)
 	}
 }
 
-void LevelData::updateFadingVoxels(double dt)
+void LevelData::updateFadingVoxels(const ChunkInt2 &minChunk, const ChunkInt2 &maxChunk, double dt)
 {
-	std::vector<Int3> completedVoxels;
+	std::vector<NewInt3> completedVoxels;
 
-	// Reverse iterate, removing voxels that are done fading out.
-	for (int i = static_cast<int>(this->fadingVoxels.size()) - 1; i >= 0; i--)
+	for (SNInt chunkX = minChunk.x; chunkX <= maxChunk.x; chunkX++)
 	{
-		FadeState &fadingVoxel = this->fadingVoxels[i];
-		const Int3 &voxel = fadingVoxel.getVoxel();
-		fadingVoxel.update(dt);
-
-		if (fadingVoxel.isDoneFading())
+		for (WEInt chunkZ = minChunk.y; chunkZ <= maxChunk.y; chunkZ++)
 		{
-			completedVoxels.push_back(voxel);
-
-			const bool isFloorVoxel = voxel.y == 0;
-			const uint16_t newVoxelID = [this, &voxel, isFloorVoxel]() -> uint16_t
+			const ChunkInt2 chunk(chunkX, chunkZ);
+			VoxelInstanceGroup *voxelInstGroup = this->tryGetVoxelInstances(chunk);
+			if (voxelInstGroup != nullptr)
 			{
-				if (isFloorVoxel)
+				for (auto &pair : *voxelInstGroup)
 				{
-					// Convert from floor to chasm.
-					return this->getChasmIdFromFadedFloorVoxel(voxel);
-				}
-				else
-				{
-					// Clear the voxel.
-					return 0;
-				}
-			}();
+					std::vector<VoxelInstance> &voxelInsts = pair.second;
 
-			// Change the voxel in the grid to its empty representation (either air or chasm) and
-			// erase the fading voxel from the list.
-			voxelGrid.setVoxel(voxel.x, voxel.y, voxel.z, newVoxelID);
-			this->fadingVoxels.erase(this->fadingVoxels.begin() + i);
+					// Reverse iterate, removing voxels that are done fading out.
+					for (int i = static_cast<int>(voxelInsts.size()) - 1; i >= 0; i--)
+					{
+						VoxelInstance &voxelInst = voxelInsts[i];
+						if (voxelInst.getType() == VoxelInstance::Type::Fading)
+						{
+							voxelInst.update(dt);
+
+							if (!voxelInst.hasRelevantState())
+							{
+								const NewInt3 voxel(voxelInst.getX(), voxelInst.getY(), voxelInst.getZ());
+								completedVoxels.push_back(voxel);
+
+								const uint16_t newVoxelID = [this, &voxel]() -> uint16_t
+								{
+									const bool isFloorVoxel = voxel.y == 0;
+									if (isFloorVoxel)
+									{
+										// Convert from floor to chasm.
+										return this->getChasmIdFromFadedFloorVoxel(voxel);
+									}
+									else
+									{
+										// Clear the voxel.
+										return 0;
+									}
+								}();
+
+								// Change the voxel to its empty representation (either air or chasm) and erase
+								// the fading voxel from the list.
+								voxelGrid.setVoxel(voxel.x, voxel.y, voxel.z, newVoxelID);
+								voxelInsts.erase(voxelInsts.begin() + i);
+							}
+						}
+					}
+				}
+			}
 		}
 	}
 
 	// Update adjacent chasm faces (not sure why this has to be done after, but it works).
-	for (const Int3 &voxel : completedVoxels)
+	for (const NewInt3 &voxel : completedVoxels)
 	{
 		const bool isFloorVoxel = voxel.y == 0;
 
 		if (isFloorVoxel)
 		{
-			const Int3 northVoxel(voxel.x + 1, voxel.y, voxel.z);
-			const Int3 southVoxel(voxel.x - 1, voxel.y, voxel.z);
-			const Int3 eastVoxel(voxel.x, voxel.y, voxel.z + 1);
-			const Int3 westVoxel(voxel.x, voxel.y, voxel.z - 1);
+			const NewInt3 northVoxel(voxel.x - 1, voxel.y, voxel.z);
+			const NewInt3 southVoxel(voxel.x + 1, voxel.y, voxel.z);
+			const NewInt3 eastVoxel(voxel.x, voxel.y, voxel.z - 1);
+			const NewInt3 westVoxel(voxel.x, voxel.y, voxel.z + 1);
 			this->tryUpdateChasmVoxel(northVoxel);
 			this->tryUpdateChasmVoxel(southVoxel);
 			this->tryUpdateChasmVoxel(eastVoxel);
@@ -1317,119 +2380,101 @@ void LevelData::updateFadingVoxels(double dt)
 }
 
 void LevelData::setActive(bool nightLightsAreActive, const WorldData &worldData,
-	const Location &location, const MiscAssets &miscAssets, TextureManager &textureManager,
-	Renderer &renderer)
+	const ProvinceDefinition &provinceDef, const LocationDefinition &locationDef,
+	const EntityDefinitionLibrary &entityDefLibrary, const CharacterClassLibrary &charClassLibrary,
+	const BinaryAssetLibrary &binaryAssetLibrary, Random &random, CitizenManager &citizenManager,
+	TextureManager &textureManager, Renderer &renderer)
 {
 	// Clear renderer textures, distant sky, and entities.
-	renderer.clearTextures();
+	renderer.clearTexturesAndEntityRenderIDs();
 	renderer.clearDistantSky();
 	this->entityManager.clear();
 
 	// Palette for voxels and flats, required in the renderer so it can conditionally transform
 	// certain palette indices for transparency.
-	COLFile col;
-	col.init(PaletteFile::fromName(PaletteName::Default).c_str());
-	const Palette &palette = col.getPalette();
+	const std::string &paletteFilename = ArenaPaletteName::Default;
+	const std::optional<PaletteID> paletteID = textureManager.tryGetPaletteID(paletteFilename.c_str());
+	if (!paletteID.has_value())
+	{
+		DebugCrash("Couldn't get palette ID for \"" + paletteFilename + "\".");
+	}
+
+	const Palette &palette = textureManager.getPaletteHandle(*paletteID);
 
 	// Loads .INF voxel textures into the renderer.
 	auto loadVoxelTextures = [this, &textureManager, &renderer, &palette]()
 	{
-		const auto &voxelTextures = this->inf.getVoxelTextures();
-		const int voxelTextureCount = static_cast<int>(voxelTextures.size());
-		for (int i = 0; i < voxelTextureCount; i++)
+		// Iterate the voxel grid's voxel definitions, get the texture asset reference(s), and allocate
+		// textures in the renderer.
+		// @todo: avoid allocating duplicate textures (maybe keep a hash set here).
+		const int voxelDefCount = this->voxelGrid.getVoxelDefCount();
+		for (int i = 0; i < voxelDefCount; i++)
 		{
-			DebugAssertIndex(voxelTextures, i);
-			const auto &textureData = voxelTextures[i];
-
-			const std::string textureName = String::toUppercase(textureData.filename);
-			const std::string_view extension = StringView::getExtension(textureName);
-			const bool isIMG = extension == "IMG";
-			const bool isSET = extension == "SET";
-			const bool noExtension = extension.size() == 0;
-
-			if (isIMG)
+			const VoxelDefinition &voxelDef = this->voxelGrid.getVoxelDef(i);
+			const Buffer<TextureAssetReference> textureAssetRefs = voxelDef.getTextureAssetReferences();
+			for (int j = 0; j < textureAssetRefs.getCount(); j++)
 			{
-				IMGFile img;
-				if (!img.init(textureName.c_str()))
+				const TextureAssetReference &textureAssetRef = textureAssetRefs.get(j);
+				if (!renderer.tryCreateVoxelTexture(textureAssetRef, textureManager))
 				{
-					DebugCrash("Couldn't init .IMG file \"" + textureName + "\".");
+					DebugLogError("Couldn't create voxel texture for \"" + textureAssetRef.filename + "\".");
 				}
-
-				renderer.setVoxelTexture(i, img.getPixels(), palette);
-			}
-			else if (isSET)
-			{
-				SETFile set;
-				if (!set.init(textureName.c_str()))
-				{
-					DebugCrash("Couldn't init .SET file \"" + textureName + "\".");
-				}
-
-				// Use the texture data's .SET index to obtain the correct surface.
-				DebugAssert(textureData.setIndex.has_value());
-				const uint8_t *srcPixels = set.getPixels(*textureData.setIndex);
-				renderer.setVoxelTexture(i, srcPixels, palette);
-			}
-			else if (noExtension)
-			{
-				// Ignore texture names with no extension. They appear to be lore-related names
-				// that were used at one point in Arena's development.
-				static_cast<void>(textureData);
-			}
-			else
-			{
-				DebugCrash("Unrecognized voxel texture extension \"" + textureName + "\".");
 			}
 		}
 	};
 
 	// Loads screen-space chasm textures into the renderer.
-	auto loadChasmTextures = [this, &renderer, &palette]()
+	auto loadChasmTextures = [this, &textureManager, &renderer, &palette]()
 	{
-		const int chasmWidth = RCIFile::WIDTH;
-		const int chasmHeight = RCIFile::HEIGHT;
+		constexpr int chasmWidth = RCIFile::WIDTH;
+		constexpr int chasmHeight = RCIFile::HEIGHT;
 		Buffer<uint8_t> chasmBuffer(chasmWidth * chasmHeight);
 
 		// Dry chasm (just a single color).
-		const uint8_t dryChasmColor = 112;
-		chasmBuffer.fill(dryChasmColor);
-		renderer.addChasmTexture(VoxelDefinition::ChasmData::Type::Dry, chasmBuffer.get(),
+		chasmBuffer.fill(ArenaRenderUtils::PALETTE_INDEX_DRY_CHASM_COLOR);
+		renderer.addChasmTexture(ArenaTypes::ChasmType::Dry, chasmBuffer.get(),
 			chasmWidth, chasmHeight, palette);
 
 		// Lambda for writing an .RCI animation to the renderer.
-		auto writeChasmAnim = [&renderer, &palette, chasmWidth, chasmHeight](
-			VoxelDefinition::ChasmData::Type chasmType, const std::string &rciName)
+		auto writeChasmAnim = [&textureManager, &renderer, &palette, chasmWidth, chasmHeight](
+			ArenaTypes::ChasmType chasmType, const std::string &rciName)
 		{
-			RCIFile rci;
-			if (!rci.init(rciName.c_str()))
+			const std::optional<TextureBuilderIdGroup> textureBuilderIDs =
+				textureManager.tryGetTextureBuilderIDs(rciName.c_str());
+			if (!textureBuilderIDs.has_value())
 			{
-				DebugLogError("Couldn't init .RCI \"" + rciName + "\".");
+				DebugLogError("Couldn't get texture builder IDs for \"" + rciName + "\".");
 				return;
 			}
 
-			for (int i = 0; i < rci.getImageCount(); i++)
+			for (int i = 0; i < textureBuilderIDs->getCount(); i++)
 			{
-				const uint8_t *rciPixels = rci.getPixels(i);
-				renderer.addChasmTexture(chasmType, rciPixels, chasmWidth, chasmHeight, palette);
+				const TextureBuilderID textureBuilderID = textureBuilderIDs->getID(i);
+				const TextureBuilder &textureBuilder = textureManager.getTextureBuilderHandle(textureBuilderID);
+				
+				DebugAssert(textureBuilder.getType() == TextureBuilder::Type::Paletted);
+				const TextureBuilder::PalettedTexture &palettedTexture = textureBuilder.getPaletted();
+				renderer.addChasmTexture(chasmType, palettedTexture.texels.get(),
+					textureBuilder.getWidth(), textureBuilder.getHeight(), palette);
 			}
 		};
 
-		writeChasmAnim(VoxelDefinition::ChasmData::Type::Wet, "WATERANI.RCI");
-		writeChasmAnim(VoxelDefinition::ChasmData::Type::Lava, "LAVAANI.RCI");
+		writeChasmAnim(ArenaTypes::ChasmType::Wet, "WATERANI.RCI");
+		writeChasmAnim(ArenaTypes::ChasmType::Lava, "LAVAANI.RCI");
 	};
 
 	// Initializes entities from the flat defs list and write their textures to the renderer.
-	auto loadEntities = [this, nightLightsAreActive, &worldData, &location, &miscAssets,
+	auto loadEntities = [this, nightLightsAreActive, &worldData, &provinceDef, &locationDef,
+		&entityDefLibrary, &charClassLibrary, &binaryAssetLibrary, &random, &citizenManager,
 		&textureManager, &renderer, &palette]()
 	{
 		// See whether the current ruler (if any) is male. This affects the displayed ruler in palaces.
-		const std::optional<bool> optRulerIsMale = [&location, &miscAssets]() -> std::optional<bool>
+		const std::optional<bool> rulerIsMale = [&locationDef]() -> std::optional<bool>
 		{
-			if (location.dataType == LocationDataType::City)
+			if (locationDef.getType() == LocationDefinition::Type::City)
 			{
-				const auto &cityData = miscAssets.getCityDataFile();
-				const auto &province = cityData.getProvinceData(location.provinceID);
-				return LocationUtils::isRulerMale(location.localCityID, province);
+				const LocationDefinition::CityDefinition &cityDef = locationDef.getCityDefinition();
+				return cityDef.rulerIsMale;
 			}
 			else
 			{
@@ -1437,45 +2482,28 @@ void LevelData::setActive(bool nightLightsAreActive, const WorldData &worldData,
 			}
 		}();
 
-		const bool isCity = worldData.getActiveWorldType() == WorldType::City;
-		const ArenaAnimUtils::StaticAnimCondition staticAnimCondition = [&worldData, isCity]()
+		const MapType mapType = worldData.getMapType();
+		const std::optional<ArenaTypes::InteriorType> interiorType = [&worldData, mapType]()
+			-> std::optional<ArenaTypes::InteriorType>
 		{
-			const bool isPalace = [&worldData]()
+			if (mapType == MapType::Interior)
 			{
-				const bool isInterior = worldData.getBaseWorldType() == WorldType::Interior;
-				if (isInterior)
-				{
-					const InteriorWorldData &interior = static_cast<const InteriorWorldData&>(worldData);
-					const VoxelDefinition::WallData::MenuType interiorType = interior.getInteriorType();
-					return interiorType == VoxelDefinition::WallData::MenuType::Palace;
-				}
-				else
-				{
-					return false;
-				}
-			}();
-
-			if (isCity)
-			{
-				return ArenaAnimUtils::StaticAnimCondition::IsCity;
-			}
-			else if (isPalace)
-			{
-				return ArenaAnimUtils::StaticAnimCondition::IsPalace;
+				const WorldData::Interior &interior = worldData.getInterior();
+				return interior.interiorType;
 			}
 			else
 			{
-				return ArenaAnimUtils::StaticAnimCondition::None;
+				return std::nullopt;
 			}
 		}();
 
-		const auto &exeData = miscAssets.getExeData();
+		const auto &exeData = binaryAssetLibrary.getExeData();
 		for (const auto &flatDef : this->flatsLists)
 		{
-			const int flatIndex = flatDef.getFlatIndex();
+			const ArenaTypes::FlatIndex flatIndex = flatDef.getFlatIndex();
 			const INFFile::FlatData &flatData = this->inf.getFlat(flatIndex);
 			const EntityType entityType = ArenaAnimUtils::getEntityTypeFromFlat(flatIndex, this->inf);
-			const std::optional<int> &optItemIndex = flatData.itemIndex;
+			const std::optional<ArenaTypes::ItemIndex> &optItemIndex = flatData.itemIndex;
 
 			bool isFinalBoss;
 			const bool isCreature = optItemIndex.has_value() &&
@@ -1487,103 +2515,51 @@ void LevelData::setActive(bool nightLightsAreActive, const WorldData &worldData,
 			// instantiate it and write textures to the renderer.
 			DebugAssert(flatDef.getPositions().size() > 0);
 
-			// Entity data index is currently the flat index (depends on .INF file).
-			const int dataIndex = flatIndex;
-
-			// Add a new entity data instance.
-			// @todo: assign creature data here from .exe data if the flat is a creature.
-			DebugAssert(this->entityManager.getEntityDef(dataIndex) == nullptr);
-			EntityDefinition newEntityDef;
-			if (isCreature)
-			{
-				// Read from .exe data instead for creatures.
-				const int itemIndex = *optItemIndex;
-				const int creatureID = isFinalBoss ?
-					ArenaAnimUtils::getFinalBossCreatureID() :
-					ArenaAnimUtils::getCreatureIDFromItemIndex(itemIndex);
-				const int creatureIndex = creatureID - 1;
-
-				newEntityDef.initCreature(exeData.entities, creatureIndex, isFinalBoss, flatIndex);
-			}
-			else if (isHumanEnemy)
-			{
-				// Use character class name as the display name.
-				const auto &charClassNames = exeData.charClasses.classNames;
-				const int charClassIndex = ArenaAnimUtils::getCharacterClassIndexFromItemIndex(*optItemIndex);
-				DebugAssertIndex(charClassNames, charClassIndex);
-				const std::string &charClassName = charClassNames[charClassIndex];
-
-				newEntityDef.initHumanEnemy(charClassName.c_str(), flatIndex, flatData.yOffset,
-					flatData.collider, flatData.largeScale, flatData.dark, flatData.transparent,
-					flatData.ceiling, flatData.mediumScale, flatData.lightIntensity);
-			}
-			else
-			{
-				// No display name.
-				const bool streetLight = ArenaAnimUtils::isStreetLightFlatIndex(flatIndex, isCity);
-				newEntityDef.initOther(flatIndex, flatData.yOffset,
-					flatData.collider, flatData.puddle, flatData.largeScale, flatData.dark,
-					flatData.transparent, flatData.ceiling, flatData.mediumScale, streetLight,
-					flatData.lightIntensity);
-			}
-
 			// Add entity animation data. Static entities have only idle animations (and maybe on/off
 			// state for lampposts). Dynamic entities have several animation states and directions.
-			auto &entityAnimData = newEntityDef.getAnimationData();
-			std::vector<EntityAnimationData::State> idleStates, lookStates, walkStates,
-				attackStates, deathStates, activatedStates;
-
-			// Cache for .CFA files referenced multiple times.
-			ArenaAnimUtils::AnimFileCache<CFAFile> cfaCache;
-
+			//auto &entityAnimData = newEntityDef.getAnimationData();
+			EntityAnimationDefinition entityAnimDef;
+			EntityAnimationInstance entityAnimInst;
 			if (entityType == EntityType::Static)
 			{
-				ArenaAnimUtils::makeStaticEntityAnimStates(flatIndex, staticAnimCondition, optRulerIsMale,
-					this->inf, exeData, &idleStates, &activatedStates);
-
-				// The entity can only be instantiated if there is at least one idle animation frame.
-				const bool success = (idleStates.size() > 0) &&
-					(idleStates.front().getKeyframes().getCount() > 0);
-
-				if (!success)
+				if (!ArenaAnimUtils::tryMakeStaticEntityAnims(flatIndex, mapType, interiorType,
+					rulerIsMale, this->inf, textureManager, &entityAnimDef, &entityAnimInst))
 				{
+					DebugLogWarning("Couldn't make static entity anims for flat \"" +
+						std::to_string(flatIndex) + "\".");
 					continue;
 				}
 
-				entityAnimData.addStateList(std::vector<EntityAnimationData::State>(idleStates));
-
-				if (activatedStates.size() > 0)
+				// The entity can only be instantiated if there is at least an idle animation.
+				int idleStateIndex;
+				if (!entityAnimDef.tryGetStateIndex(EntityAnimationUtils::STATE_IDLE.c_str(), &idleStateIndex))
 				{
-					entityAnimData.addStateList(std::vector<EntityAnimationData::State>(activatedStates));
+					DebugLogWarning("Missing static entity idle anim state for flat \"" +
+						std::to_string(flatIndex) + "\".");
+					continue;
 				}
 			}
 			else if (entityType == EntityType::Dynamic)
 			{
-				ArenaAnimUtils::makeDynamicEntityAnimStates(flatIndex, this->inf, miscAssets, cfaCache,
-					&idleStates, &lookStates, &walkStates, &attackStates, &deathStates);
+				// Assume that human enemies in level data are male.
+				const std::optional<bool> isMale = true;
 
-				// Must at least have an idle state.
-				DebugAssert(idleStates.size() > 0);
-				entityAnimData.addStateList(std::vector<EntityAnimationData::State>(idleStates));
-
-				if (lookStates.size() > 0)
+				if (!ArenaAnimUtils::tryMakeDynamicEntityAnims(flatIndex, isMale, this->inf,
+					charClassLibrary, binaryAssetLibrary, textureManager, &entityAnimDef,
+					&entityAnimInst))
 				{
-					entityAnimData.addStateList(std::vector<EntityAnimationData::State>(lookStates));
+					DebugLogWarning("Couldn't make dynamic entity anims for flat \"" +
+						std::to_string(flatIndex) + "\".");
+					continue;
 				}
 
-				if (walkStates.size() > 0)
+				// Must have at least an idle animation.
+				int idleStateIndex;
+				if (!entityAnimDef.tryGetStateIndex(EntityAnimationUtils::STATE_IDLE.c_str(), &idleStateIndex))
 				{
-					entityAnimData.addStateList(std::vector<EntityAnimationData::State>(walkStates));
-				}
-
-				if (attackStates.size() > 0)
-				{
-					entityAnimData.addStateList(std::vector<EntityAnimationData::State>(attackStates));
-				}
-
-				if (deathStates.size() > 0)
-				{
-					entityAnimData.addStateList(std::vector<EntityAnimationData::State>(deathStates));
+					DebugLogWarning("Missing dynamic entity idle anim state for flat \"" +
+						std::to_string(flatIndex) + "\".");
+					continue;
 				}
 			}
 			else
@@ -1592,162 +2568,176 @@ void LevelData::setActive(bool nightLightsAreActive, const WorldData &worldData,
 					std::to_string(static_cast<int>(entityType)) + "\".");
 			}
 
-			const bool isStreetlight = newEntityDef.getInfData().streetLight;
-			this->entityManager.addEntityDef(std::move(newEntityDef));
-
-			// Initialize each instance of the flat def.
-			for (const Int2 &position : flatDef.getPositions())
+			// @todo: replace isCreature/etc. with some flatIndex -> EntityDefinition::Type function.
+			// - Most likely also need location type, etc. because flatIndex is level-dependent.
+			EntityDefinition newEntityDef;
+			if (isCreature)
 			{
-				Entity *entity = [this, entityType]() -> Entity*
+				const ArenaTypes::ItemIndex itemIndex = *optItemIndex;
+				const int creatureID = isFinalBoss ?
+					ArenaAnimUtils::getFinalBossCreatureID() :
+					ArenaAnimUtils::getCreatureIDFromItemIndex(itemIndex);
+				const int creatureIndex = creatureID - 1;
+
+				// @todo: read from EntityDefinitionLibrary instead, and don't make anim def above.
+				// Currently these are just going to be duplicates of defs in the library.
+				EntityDefinitionLibrary::Key entityDefKey;
+				entityDefKey.initCreature(creatureIndex, isFinalBoss);
+
+				EntityDefID entityDefID;
+				if (!entityDefLibrary.tryGetDefinitionID(entityDefKey, &entityDefID))
 				{
-					if (entityType == EntityType::Static)
-					{
-						StaticEntity *staticEntity = this->entityManager.makeStaticEntity();
-						staticEntity->setDerivedType(StaticEntityType::Doodad);
-						return staticEntity;
-					}
-					else if (entityType == EntityType::Dynamic)
-					{
-						DynamicEntity *dynamicEntity = this->entityManager.makeDynamicEntity();
-						dynamicEntity->setDerivedType(DynamicEntityType::NPC);
-						dynamicEntity->setDirection(Double2::UnitX);
-						return dynamicEntity;
-					}
-					else
-					{
-						DebugCrash("Unrecognized entity type \"" +
-							std::to_string(static_cast<int>(entityType)) + "\".");
-						return nullptr;
-					}
-				}();
-
-				entity->init(dataIndex);
-
-				const Double2 positionXZ(
-					static_cast<double>(position.x) + 0.50,
-					static_cast<double>(position.y) + 0.50);
-				entity->setPosition(positionXZ, this->entityManager, this->voxelGrid);
-
-				// Need to turn streetlights on or off at initialization.
-				if (isStreetlight)
-				{
-					auto &entityAnim = entity->getAnimation();
-					const EntityAnimationData::StateType streetlightStateType = nightLightsAreActive ?
-						EntityAnimationData::StateType::Activated : EntityAnimationData::StateType::Idle;
-					entityAnim.setStateType(streetlightStateType);
+					DebugLogWarning("Couldn't get creature definition " +
+						std::to_string(creatureIndex) + " from library.");
+					continue;
 				}
+
+				newEntityDef = entityDefLibrary.getDefinition(entityDefID);
+			}
+			else if (isHumanEnemy)
+			{
+				const bool male = (random.next() % 2) == 0;
+				const int charClassID = ArenaAnimUtils::getCharacterClassIndexFromItemIndex(*optItemIndex);
+				newEntityDef.initEnemyHuman(male, charClassID, std::move(entityAnimDef));
+			}
+			else // @todo: handle other entity definition types.
+			{
+				// Doodad.
+				const bool streetLight = ArenaAnimUtils::isStreetLightFlatIndex(flatIndex, mapType);
+				const double scale = ArenaAnimUtils::getDimensionModifier(flatData);
+				const int lightIntensity = flatData.lightIntensity.has_value() ? *flatData.lightIntensity : 0;
+
+				newEntityDef.initDoodad(flatData.yOffset, scale, flatData.collider,
+					flatData.transparent, flatData.ceiling, streetLight, flatData.puddle,
+					lightIntensity, std::move(entityAnimDef));
 			}
 
-			auto addTexturesFromState = [&renderer, &palette, flatIndex, &cfaCache](
-				const EntityAnimationData::State &animState, int angleID)
+			const bool isStreetlight = (newEntityDef.getType() == EntityDefinition::Type::Doodad) &&
+				newEntityDef.getDoodad().streetlight;
+			const bool isPuddle = (newEntityDef.getType() == EntityDefinition::Type::Doodad) &&
+				newEntityDef.getDoodad().puddle;
+			const EntityDefID entityDefID = this->entityManager.addEntityDef(
+				std::move(newEntityDef), entityDefLibrary);
+			const EntityDefinition &entityDefRef = this->entityManager.getEntityDef(
+				entityDefID, entityDefLibrary);
+			
+			// Quick hack to get back the anim def that was moved into the entity def.
+			const EntityAnimationDefinition &entityAnimDefRef = entityDefRef.getAnimDef();
+
+			// Generate render ID for this entity type to share between identical instances.
+			const EntityRenderID entityRenderID = renderer.makeEntityRenderID();
+
+			// Initialize each instance of the flat def.
+			for (const NewInt2 &position : flatDef.getPositions())
 			{
-				// Check whether the animation direction ID is for a flipped animation.
-				const bool isFlipped = ArenaAnimUtils::isAnimDirectionFlipped(angleID);
+				EntityRef entityRef = this->entityManager.makeEntity(entityType);
 
-				// Write the flat def's textures to the renderer.
-				const std::string &entityAnimName = animState.getTextureName();
-				const std::string_view extension = StringView::getExtension(entityAnimName);
-				const bool isCFA = extension == "CFA";
-				const bool isDFA = extension == "DFA";
-				const bool isIMG = extension == "IMG";
-				const bool noExtension = extension.size() == 0;
+				// Using raw entity pointer in this scope for performance due to it currently being
+				// impractical to use the ref wrapper when loading the entire wilderness.
+				Entity *entityPtr = entityRef.get();
 
-				// Entities can be partially transparent. Some palette indices determine whether
-				// there should be any "alpha blending" (in the original game, it implements alpha
-				// using light level diminishing with 13 different levels in an .LGT file).
-				auto addFlatTexture = [&renderer, &palette, isFlipped](const uint8_t *texels, int width,
-					int height, int flatIndex, EntityAnimationData::StateType stateType, int angleID)
+				if (entityType == EntityType::Static)
 				{
-					renderer.addFlatTexture(flatIndex, stateType, angleID, isFlipped, texels,
-						width, height, palette);
-				};
-
-				if (isCFA)
-				{
-					const CFAFile *cfa;
-					if (!cfaCache.tryGet(entityAnimName.c_str(), &cfa))
-					{
-						DebugCrash("Couldn't get cached .CFA file \"" + entityAnimName + "\".");
-					}
-
-					for (int i = 0; i < cfa->getImageCount(); i++)
-					{
-						addFlatTexture(cfa->getPixels(i), cfa->getWidth(), cfa->getHeight(),
-							flatIndex, animState.getType(), angleID);
-					}
+					StaticEntity *staticEntity = dynamic_cast<StaticEntity*>(entityPtr);
+					staticEntity->initDoodad(entityDefID, entityAnimInst);
 				}
-				else if (isDFA)
+				else if (entityType == EntityType::Dynamic)
 				{
-					DFAFile dfa;
-					if (!dfa.init(entityAnimName.c_str()))
-					{
-						DebugCrash("Couldn't init .DFA file \"" + entityAnimName + "\".");
-					}
-
-					for (int i = 0; i < dfa.getImageCount(); i++)
-					{
-						addFlatTexture(dfa.getPixels(i), dfa.getWidth(), dfa.getHeight(),
-							flatIndex, animState.getType(), angleID);
-					}
-				}
-				else if (isIMG)
-				{
-					IMGFile img;
-					if (!img.init(entityAnimName.c_str()))
-					{
-						DebugCrash("Could not init .IMG file \"" + entityAnimName + "\".");
-					}
-
-					addFlatTexture(img.getPixels(), img.getWidth(), img.getHeight(),
-						flatIndex, animState.getType(), angleID);
-				}
-				else if (noExtension)
-				{
-					// Ignore texture names with no extension. They appear to be lore-related names
-					// that were used at one point in Arena's development.
-					static_cast<void>(entityAnimName);
+					// All dynamic entities in a level are creatures (never citizens).
+					DynamicEntity *dynamicEntity = dynamic_cast<DynamicEntity*>(entityPtr);
+					dynamicEntity->initCreature(entityDefID, entityAnimInst,
+						CardinalDirection::North, random);
 				}
 				else
 				{
-					DebugCrash("Unrecognized flat texture name \"" + entityAnimName + "\".");
+					DebugCrash("Unrecognized entity type \"" +
+						std::to_string(static_cast<int>(entityType)) + "\".");
 				}
-			};
 
-			auto addTexturesFromStateList = [&renderer, &palette, &addTexturesFromState](
-				const std::vector<EntityAnimationData::State> &animStateList)
-			{
-				for (size_t i = 0; i < animStateList.size(); i++)
+				entityPtr->setRenderID(entityRenderID);
+
+				// Set default animation state.
+				int defaultStateIndex;
+				if (!isStreetlight)
 				{
-					const auto &animState = animStateList[i];
-					const int angleID = static_cast<int>(i + 1);
-					addTexturesFromState(animState, angleID);
+					// Entities will use idle animation by default.
+					if (!entityAnimDefRef.tryGetStateIndex(EntityAnimationUtils::STATE_IDLE.c_str(), &defaultStateIndex))
+					{
+						DebugLogWarning("Couldn't get idle state index for flat \"" +
+							std::to_string(flatIndex) + "\".");
+						continue;
+					}
 				}
-			};
+				else
+				{
+					// Need to turn streetlights on or off at initialization.
+					const std::string &streetlightStateName = nightLightsAreActive ?
+						EntityAnimationUtils::STATE_ACTIVATED : EntityAnimationUtils::STATE_IDLE;
 
-			// Add textures to the renderer for each of the entity's animation states.
-			// @todo: don't add duplicate textures to the renderer (needs to be handled both here and
-			// in the renderer implementation, because it seems to group textures by flat index only,
-			// which could be wasteful).
-			// - probably do it by having a hash set of <flatIndex, stateType> pairs and checking
-			//   in the addTextureFromState lambda.
-			addTexturesFromStateList(idleStates);
-			addTexturesFromStateList(lookStates);
-			addTexturesFromStateList(walkStates);
-			addTexturesFromStateList(attackStates);
-			addTexturesFromStateList(deathStates);
-			addTexturesFromStateList(activatedStates);
+					if (!entityAnimDefRef.tryGetStateIndex(streetlightStateName.c_str(), &defaultStateIndex))
+					{
+						DebugLogWarning("Couldn't get \"" + streetlightStateName +
+							"\" streetlight state index for flat \"" + std::to_string(flatIndex) + "\".");
+						continue;
+					}
+				}
+
+				EntityAnimationInstance &animInst = entityPtr->getAnimInstance();
+				animInst.setStateIndex(defaultStateIndex);
+
+				// Note: since the entity pointer is being used directly, update the position last
+				// in scope to avoid a dangling pointer problem in case it changes chunks (from 0, 0).
+				const NewDouble2 positionXZ = VoxelUtils::getVoxelCenter(position);
+				const CoordDouble2 coord = VoxelUtils::newPointToCoord(positionXZ);
+				entityPtr->setPosition(coord, this->entityManager, this->voxelGrid);
+			}
+
+			// Initialize renderer buffers for the entity animation then populate all textures
+			// of the animation.
+			renderer.setFlatTextures(entityRenderID, entityAnimDefRef, entityAnimInst, isPuddle, textureManager);
+		}
+
+		// Spawn citizens at level start if the conditions are met for the new level.
+		const bool isCity = mapType == MapType::City;
+		const bool isWild = mapType == MapType::Wilderness;
+		if (isCity || isWild)
+		{
+			citizenManager.spawnCitizens(provinceDef.getRaceID(), this->voxelGrid, this->entityManager,
+				locationDef, entityDefLibrary, binaryAssetLibrary, random, textureManager, renderer);
 		}
 	};
 
 	loadVoxelTextures();
 	loadChasmTextures();
 	loadEntities();
+
+	// Level-type-specific loading.
+	if (this->isInterior)
+	{
+		renderer.setSkyPalette(&this->interior.skyColor, 1);
+	}
+	else
+	{
+		renderer.setDistantSky(this->exterior.distantSky, palette, textureManager);
+	}
 }
 
 void LevelData::tick(Game &game, double dt)
 {
-	this->updateFadingVoxels(dt);
+	const int chunkDistance = game.getOptions().getMisc_ChunkDistance();
+	const auto &player = game.getGameData().getPlayer();
+	const ChunkInt2 &playerChunk = player.getPosition().chunk;
+	
+	ChunkInt2 minChunk, maxChunk;
+	ChunkUtils::getSurroundingChunks(playerChunk, chunkDistance, &minChunk, &maxChunk);
+	this->updateFadingVoxels(minChunk, maxChunk, dt);
 
 	// Update entities.
 	this->entityManager.tick(game, dt);
+
+	// Level-type-specific updating.
+	if (!this->isInterior)
+	{
+		this->exterior.distantSky.tick(dt);
+	}
 }

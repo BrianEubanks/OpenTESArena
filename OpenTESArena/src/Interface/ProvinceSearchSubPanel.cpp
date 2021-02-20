@@ -8,20 +8,17 @@
 #include "RichTextString.h"
 #include "TextAlignment.h"
 #include "TextEntry.h"
+#include "../Assets/ArenaTextureName.h"
 #include "../Assets/CityDataFile.h"
 #include "../Game/Game.h"
 #include "../Media/Color.h"
 #include "../Media/FontName.h"
-#include "../Media/PaletteFile.h"
-#include "../Media/PaletteName.h"
-#include "../Media/TextureFile.h"
 #include "../Media/TextureManager.h"
-#include "../Media/TextureName.h"
+#include "../Rendering/ArenaRenderUtils.h"
 #include "../Rendering/Renderer.h"
 
 #include "components/utilities/String.h"
 
-const int ProvinceSearchSubPanel::MAX_NAME_LENGTH = 20;
 const Int2 ProvinceSearchSubPanel::DEFAULT_TEXT_CURSOR_POSITION(85, 100);
 
 ProvinceSearchSubPanel::ProvinceSearchSubPanel(Game &game,
@@ -30,26 +27,26 @@ ProvinceSearchSubPanel::ProvinceSearchSubPanel(Game &game,
 {
 	// Don't initialize the locations list box until it's reached, since its contents
 	// may depend on the search results.
-	this->parchment = Texture::generate(
-		Texture::PatternType::Parchment, 280, 40, game.getTextureManager(),
-		game.getRenderer());
+	this->parchment = TextureUtils::generate(TextureUtils::PatternType::Parchment, 280, 40,
+		game.getTextureManager(), game.getRenderer());
 
 	this->textTitleTextBox = [&game]()
 	{
 		const int x = 30;
 		const int y = 89;
 
-		const auto &exeData = game.getMiscAssets().getExeData();
+		const auto &exeData = game.getBinaryAssetLibrary().getExeData();
 		const std::string &text = exeData.travel.searchTitleText;
 
+		const auto &fontLibrary = game.getFontLibrary();
 		const RichTextString richText(
 			text,
 			FontName::Arena,
 			Color(52, 24, 8),
 			TextAlignment::Left,
-			game.getFontManager());
+			fontLibrary);
 
-		return std::make_unique<TextBox>(x, y, richText, game.getRenderer());
+		return std::make_unique<TextBox>(x, y, richText, fontLibrary, game.getRenderer());
 	}();
 
 	this->textEntryTextBox = [&game]()
@@ -57,14 +54,15 @@ ProvinceSearchSubPanel::ProvinceSearchSubPanel(Game &game,
 		const int x = ProvinceSearchSubPanel::DEFAULT_TEXT_CURSOR_POSITION.x;
 		const int y = ProvinceSearchSubPanel::DEFAULT_TEXT_CURSOR_POSITION.y;
 
+		const auto &fontLibrary = game.getFontLibrary();
 		const RichTextString richText(
 			std::string(),
 			FontName::Arena,
 			Color(52, 24, 8),
 			TextAlignment::Left,
-			game.getFontManager());
+			fontLibrary);
 
-		return std::make_unique<TextBox>(x, y, richText, game.getRenderer());
+		return std::make_unique<TextBox>(x, y, richText, fontLibrary, game.getRenderer());
 	}();
 
 	this->textAcceptButton = []()
@@ -155,22 +153,16 @@ ProvinceSearchSubPanel::ProvinceSearchSubPanel(Game &game,
 	SDL_StartTextInput();
 }
 
-Panel::CursorData ProvinceSearchSubPanel::getCurrentCursor() const
+std::optional<Panel::CursorData> ProvinceSearchSubPanel::getCurrentCursor() const
 {
 	if (this->mode == ProvinceSearchSubPanel::Mode::TextEntry)
 	{
 		// No mouse cursor when typing.
-		return CursorData(nullptr, CursorAlignment::TopLeft);
+		return std::nullopt;
 	}
 	else
 	{
-		auto &game = this->getGame();
-		auto &renderer = game.getRenderer();
-		auto &textureManager = game.getTextureManager();
-		const auto &texture = textureManager.getTexture(
-			TextureFile::fromName(TextureName::SwordCursor),
-			PaletteFile::fromName(PaletteName::Default), renderer);
-		return CursorData(&texture, CursorAlignment::TopLeft);
+		return this->getDefaultCursor();
 	}
 }
 
@@ -178,9 +170,7 @@ std::vector<int> ProvinceSearchSubPanel::getMatchingLocations(Game &game,
 	const std::string &locationName, int provinceIndex, const int **exactLocationIndex)
 {
 	auto &gameData = game.getGameData();
-	const auto &miscAssets = game.getMiscAssets();
-
-	const WorldMapDefinition &worldMapDef = miscAssets.getWorldMapDefinition();
+	const WorldMapDefinition &worldMapDef = gameData.getWorldMapDefinition();
 	const WorldMapInstance &worldMapInst = gameData.getWorldMapInstance();
 
 	const ProvinceInstance &provinceInst = worldMapInst.getProvinceInstance(provinceIndex);
@@ -271,7 +261,7 @@ std::vector<int> ProvinceSearchSubPanel::getMatchingLocations(Game &game,
 
 std::string ProvinceSearchSubPanel::getBackgroundFilename() const
 {
-	const auto &exeData = this->getGame().getMiscAssets().getExeData();
+	const auto &exeData = this->getGame().getBinaryAssetLibrary().getExeData();
 	const auto &provinceImgFilenames = exeData.locations.provinceImgFilenames;
 	const std::string &filename = provinceImgFilenames.at(this->provinceID);
 
@@ -290,9 +280,8 @@ void ProvinceSearchSubPanel::initLocationsListBox()
 		const int y = 34;
 
 		auto &gameData = game.getGameData();
-		const auto &miscAssets = game.getMiscAssets();
+		const WorldMapDefinition &worldMapDef = gameData.getWorldMapDefinition();
 		const WorldMapInstance &worldMapInst = gameData.getWorldMapInstance();
-		const WorldMapDefinition &worldMapDef = miscAssets.getWorldMapDefinition();
 		const ProvinceInstance &provinceInst = worldMapInst.getProvinceInstance(this->provinceID);
 		const int provinceDefIndex = provinceInst.getProvinceDefIndex();
 		const ProvinceDefinition &provinceDef = worldMapDef.getProvinceDef(provinceDefIndex);
@@ -316,7 +305,7 @@ void ProvinceSearchSubPanel::initLocationsListBox()
 			locationNames,
 			FontName::Arena,
 			maxDisplayed,
-			game.getFontManager(),
+			game.getFontLibrary(),
 			game.getRenderer());
 	}();
 }
@@ -367,14 +356,15 @@ void ProvinceSearchSubPanel::handleTextEntryEvent(const SDL_Event &e)
 
 				const RichTextString &oldRichText = this->textEntryTextBox->getRichText();
 
+				const auto &fontLibrary = game.getFontLibrary();
 				const RichTextString richText(
 					this->locationName,
 					oldRichText.getFontName(),
 					oldRichText.getColor(),
 					oldRichText.getAlignment(),
-					game.getFontManager());
+					fontLibrary);
 
-				return std::make_unique<TextBox>(x, y, richText, game.getRenderer());
+				return std::make_unique<TextBox>(x, y, richText, fontLibrary, game.getRenderer());
 			}();
 		}
 	}
@@ -472,8 +462,8 @@ void ProvinceSearchSubPanel::renderTextEntry(Renderer &renderer)
 {
 	// Draw parchment.
 	renderer.drawOriginal(this->parchment,
-		(Renderer::ORIGINAL_WIDTH / 2) - (this->parchment.getWidth() / 2) - 1,
-		(Renderer::ORIGINAL_HEIGHT / 2) - (this->parchment.getHeight() / 2) - 1);
+		(ArenaRenderUtils::SCREEN_WIDTH / 2) - (this->parchment.getWidth() / 2) - 1,
+		(ArenaRenderUtils::SCREEN_HEIGHT / 2) - (this->parchment.getHeight() / 2) - 1);
 
 	// Draw text: title, location name.
 	renderer.drawOriginal(this->textTitleTextBox->getTexture(),
@@ -489,17 +479,32 @@ void ProvinceSearchSubPanel::renderList(Renderer &renderer)
 	// Draw list background.
 	auto &game = this->getGame();
 	auto &textureManager = game.getTextureManager();
-	const auto &listBackground = textureManager.getTexture(
-		TextureFile::fromName(TextureName::PopUp8), this->getBackgroundFilename(), renderer);
+	const std::string listBackgroundPaletteFilename = this->getBackgroundFilename();
+	const std::optional<PaletteID> listBackgroundPaletteID =
+		textureManager.tryGetPaletteID(listBackgroundPaletteFilename.c_str());
+	if (!listBackgroundPaletteID.has_value())
+	{
+		DebugLogError("Couldn't get list background palette ID for \"" + listBackgroundPaletteFilename + "\".");
+		return;
+	}
+	
+	const std::string &listBackgroundTextureFilename = ArenaTextureName::PopUp8;
+	const std::optional<TextureBuilderID> listBackgroundTextureBuilderID =
+		textureManager.tryGetTextureBuilderID(listBackgroundTextureFilename.c_str());
+	if (!listBackgroundTextureBuilderID.has_value())
+	{
+		DebugLogError("Couldn't get list background texture builder ID for \"" + listBackgroundTextureFilename + "\".");
+		return;
+	}
 
-	const int listBackgroundX = 57;
-	const int listBackgroundY = 11;
-	renderer.drawOriginal(listBackground, listBackgroundX, listBackgroundY);
+	constexpr int listBackgroundX = 57;
+	constexpr int listBackgroundY = 11;
+	renderer.drawOriginal(*listBackgroundTextureBuilderID, *listBackgroundPaletteID,
+		listBackgroundX, listBackgroundY, textureManager);
 
 	// Draw list box text.
 	renderer.drawOriginal(this->locationsListBox->getTexture(),
-		this->locationsListBox->getPoint().x,
-		this->locationsListBox->getPoint().y);
+		this->locationsListBox->getPoint().x, this->locationsListBox->getPoint().y);
 }
 
 void ProvinceSearchSubPanel::render(Renderer &renderer)

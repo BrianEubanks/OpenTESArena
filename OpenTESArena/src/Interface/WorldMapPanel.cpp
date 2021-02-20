@@ -4,22 +4,18 @@
 #include "GameWorldPanel.h"
 #include "ProvinceMapPanel.h"
 #include "TextBox.h"
+#include "Texture.h"
 #include "WorldMapPanel.h"
+#include "../Assets/ArenaTextureName.h"
 #include "../Assets/CIFFile.h"
-#include "../Assets/MiscAssets.h"
 #include "../Assets/WorldMapMask.h"
 #include "../Game/Game.h"
 #include "../Game/GameData.h"
 #include "../Game/Options.h"
 #include "../Math/Rect.h"
-#include "../Media/PaletteFile.h"
-#include "../Media/PaletteName.h"
-#include "../Media/TextureFile.h"
 #include "../Media/TextureManager.h"
-#include "../Media/TextureName.h"
+#include "../Rendering/ArenaRenderUtils.h"
 #include "../Rendering/Renderer.h"
-#include "../Rendering/Texture.h"
-#include "../World/Location.h"
 
 #include "components/debug/Debug.h"
 
@@ -28,7 +24,7 @@ WorldMapPanel::WorldMapPanel(Game &game, std::unique_ptr<ProvinceMapPanel::Trave
 {
 	this->backToGameButton = []()
 	{
-		Int2 center(Renderer::ORIGINAL_WIDTH - 22, Renderer::ORIGINAL_HEIGHT - 7);
+		Int2 center(ArenaRenderUtils::SCREEN_WIDTH - 22, ArenaRenderUtils::SCREEN_HEIGHT - 7);
 		int width = 36;
 		int height = 9;
 		auto function = [](Game &game)
@@ -62,15 +58,9 @@ WorldMapPanel::WorldMapPanel(Game &game, std::unique_ptr<ProvinceMapPanel::Trave
 	}
 }
 
-Panel::CursorData WorldMapPanel::getCurrentCursor() const
+std::optional<Panel::CursorData> WorldMapPanel::getCurrentCursor() const
 {
-	auto &game = this->getGame();
-	auto &renderer = game.getRenderer();
-	auto &textureManager = game.getTextureManager();
-	const auto &texture = textureManager.getTexture(
-		TextureFile::fromName(TextureName::SwordCursor),
-		PaletteFile::fromName(PaletteName::Default), renderer);
-	return CursorData(&texture, CursorAlignment::TopLeft);
+	return this->getDefaultCursor();
 }
 
 void WorldMapPanel::handleEvent(const SDL_Event &e)
@@ -93,7 +83,7 @@ void WorldMapPanel::handleEvent(const SDL_Event &e)
 			.nativeToOriginal(mousePosition);
 
 		// Listen for clicks on the map and exit button.
-		const auto &worldMapMasks = this->getGame().getMiscAssets().getWorldMapMasks();
+		const auto &worldMapMasks = this->getGame().getBinaryAssetLibrary().getWorldMapMasks();
 		const int maskCount = static_cast<int>(worldMapMasks.size());
 		for (int maskID = 0; maskID < maskCount; maskID++)
 		{
@@ -134,21 +124,40 @@ void WorldMapPanel::render(Renderer &renderer)
 	// Clear full screen.
 	renderer.clear();
 
-	// Set palette.
 	auto &textureManager = this->getGame().getTextureManager();
-	textureManager.setPalette(PaletteFile::fromName(PaletteName::Default));
+	const std::string &worldMapFilename = ArenaTextureName::WorldMap;
+	const std::string &paletteFilename = worldMapFilename;
+	const std::optional<PaletteID> paletteID = textureManager.tryGetPaletteID(paletteFilename.c_str());
+	if (!paletteID.has_value())
+	{
+		DebugLogError("Couldn't get palette ID for \"" + paletteFilename + "\".");
+		return;
+	}
 
 	// Draw world map background. This one has "Exit" at the bottom right.
-	const std::string &backgroundFilename = TextureFile::fromName(TextureName::WorldMap);
-	const auto &mapBackground = textureManager.getTexture(
-		backgroundFilename, PaletteFile::fromName(PaletteName::BuiltIn), renderer);
-	renderer.drawOriginal(mapBackground);
+	const std::optional<TextureBuilderID> mapBackgroundTextureBuilderID =
+		textureManager.tryGetTextureBuilderID(worldMapFilename.c_str());
+	if (!mapBackgroundTextureBuilderID.has_value())
+	{
+		DebugLogError("Couldn't get map background texture builder ID for \"" + worldMapFilename + "\".");
+		return;
+	}
+	
+	renderer.drawOriginal(*mapBackgroundTextureBuilderID, *paletteID, textureManager);
 
 	// Draw yellow text over current province name.
-	const int provinceID = this->getGame().getGameData().getLocation().provinceID;
-	const auto &provinceText = textureManager.getTextures(
-		TextureFile::fromName(TextureName::ProvinceNames),
-		backgroundFilename, renderer).at(provinceID);
+	const std::string &provinceNamesFilename = ArenaTextureName::ProvinceNames;
+	const std::optional<TextureBuilderIdGroup> provinceTextTextureBuilderIDs =
+		textureManager.tryGetTextureBuilderIDs(provinceNamesFilename.c_str());
+	if (!provinceTextTextureBuilderIDs.has_value())
+	{
+		DebugLogError("Couldn't get province text texture builder IDs for \"" + provinceNamesFilename + "\".");
+		return;
+	}
+
+	const auto &gameData = this->getGame().getGameData();
+	const int provinceID = gameData.getProvinceDefinition().getRaceID();
+	const TextureBuilderID provinceTextTextureBuilderID = provinceTextTextureBuilderIDs->getID(provinceID);
 	const Int2 &nameOffset = this->provinceNameOffsets.at(provinceID);
-	renderer.drawOriginal(provinceText, nameOffset.x, nameOffset.y);
+	renderer.drawOriginal(provinceTextTextureBuilderID, *paletteID, nameOffset.x, nameOffset.y, textureManager);
 }

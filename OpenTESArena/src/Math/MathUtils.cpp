@@ -16,18 +16,48 @@ double MathUtils::almostEqual(double a, double b)
 	return MathUtils::almostZero(a - b);
 }
 
-double MathUtils::fullAtan2(double y, double x)
+double MathUtils::getRealIndex(int bufferSize, double percent)
 {
-	const double angle = std::atan2(y, x);
+	const double bufferSizeReal = static_cast<double>(bufferSize);
+
+	// Keep the real index in the same array bounds (i.e. if bufferSize is 5, the max is 4.999...).
+	const double maxRealIndex = std::max(0.0, bufferSizeReal - Constants::Epsilon);
+	return std::clamp(bufferSizeReal * percent, 0.0, maxRealIndex);
+}
+
+int MathUtils::getWrappedIndex(int bufferSize, int index)
+{
+	while (index >= bufferSize)
+	{
+		index -= bufferSize;
+	}
+
+	while (index < 0)
+	{
+		index += bufferSize;
+	}
+
+	return index;
+}
+
+Radians MathUtils::fullAtan2(double y, double x)
+{
+	const Radians angle = std::atan2(y, x);
 	return (angle >= 0.0) ? angle : (Constants::TwoPi + angle);
 }
 
-double MathUtils::verticalFovToZoom(double fovY)
+Radians MathUtils::fullAtan2(const NewDouble2 &v)
+{
+	// Flip +X south/+Y west to +X east/+Y north.
+	return MathUtils::fullAtan2(-v.x, -v.y);
+}
+
+double MathUtils::verticalFovToZoom(Degrees fovY)
 {
 	return 1.0 / std::tan((fovY * 0.5) * Constants::DegToRad);
 }
 
-double MathUtils::verticalFovToHorizontalFov(double fovY, double aspectRatio)
+Degrees MathUtils::verticalFovToHorizontalFov(Degrees fovY, double aspectRatio)
 {
 	DebugAssert(fovY > 0.0);
 	DebugAssert(fovY < 180.0);
@@ -211,4 +241,45 @@ double MathUtils::distanceBetweenLineSegments(const Double3 &p0, const Double3 &
 
 	// The distance between these two points is the shortest distance between the line segments.
 	return (Psc - Qtc).length();
+}
+
+std::vector<Int2> MathUtils::bresenhamLine(const Int2 &p1, const Int2 &p2)
+{
+	const int dx = std::abs(p2.x - p1.x);
+	const int dy = std::abs(p2.y - p1.y);
+	const int dirX = (p1.x < p2.x) ? 1 : -1;
+	const int dirY = (p1.y < p2.y) ? 1 : -1;
+
+	int pointX = p1.x;
+	int pointY = p1.y;
+	int error = ((dx > dy) ? dx : -dy) / 2;
+	const int endX = p2.x;
+	const int endY = p2.y;
+	std::vector<Int2> points;
+
+	while (true)
+	{
+		points.push_back(Int2(pointX, pointY));
+
+		if ((pointX == endX) && (pointY == endY))
+		{
+			break;
+		}
+
+		const int innerError = error;
+
+		if (innerError > -dx)
+		{
+			error -= dy;
+			pointX += dirX;
+		}
+
+		if (innerError < dy)
+		{
+			error += dx;
+			pointY += dirY;
+		}
+	}
+
+	return points;
 }

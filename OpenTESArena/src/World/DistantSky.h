@@ -5,12 +5,13 @@
 #include <optional>
 #include <vector>
 
+#include "../Assets/TextureAssetReference.h"
+#include "../Math/MathUtils.h"
 #include "../Math/Vector3.h"
+#include "../Media/TextureManager.h"
+#include "../Media/TextureUtils.h"
 
 #include "components/utilities/Buffer.h"
-#include "components/utilities/BufferView.h"
-#include "components/utilities/Buffer2D.h"
-#include "components/utilities/BufferView2D.h"
 
 // Contains data for distant objects (mountains, clouds, stars). Each distant object's image
 // is owned by the texture manager.
@@ -30,36 +31,32 @@ public:
 	{
 	private:
 		int entryIndex; // Texture entry in distant sky.
-		double angleRadians;
+		Radians angle;
 	public:
-		LandObject(int entryIndex, double angleRadians);
+		LandObject(int entryIndex, Radians angle);
 
 		int getTextureEntryIndex() const;
-		double getAngleRadians() const;
+		Radians getAngle() const;
 	};
 
 	// An object with an animation that sits on the horizon.
 	class AnimatedLandObject
 	{
 	private:
-		static constexpr double DEFAULT_FRAME_TIME = 1.0 / 18.0;
+		static constexpr double DEFAULT_ANIM_SECONDS = 1.0 / 3.0;
 
 		int setEntryIndex; // Texture set entry in distant sky.
-		double angleRadians, targetFrameTime, currentFrameTime;
-		int index;
+		Radians angle;
+		double targetSeconds, currentSeconds;
 	public:
 		// All textures are stored in one texture set in the distant sky.
-		AnimatedLandObject(int setEntryIndex, double angleRadians, double frameTime);
-		AnimatedLandObject(int setEntryIndex, double angleRadians);
+		AnimatedLandObject(int setEntryIndex, Radians angle);
 
 		int getTextureSetEntryIndex() const;
-		double getAngleRadians() const;
-		double getFrameTime() const;
-		int getIndex() const;
+		Radians getAngle() const;
+		double getAnimPercent() const;
 
-		void setFrameTime(double frameTime);
-		void setIndex(int index);
-		void update(double dt, const DistantSky &distantSky);
+		void update(double dt);
 	};
 
 	// An object in the air, like clouds.
@@ -67,12 +64,13 @@ public:
 	{
 	private:
 		int entryIndex; // Texture entry in distant sky.
-		double angleRadians, height; // 0 height == horizon, 1 height == top of sky gradient.
+		Radians angle;
+		double height; // 0 height == horizon, 1 height == top of sky gradient.
 	public:
-		AirObject(int entryIndex, double angleRadians, double height);
+		AirObject(int entryIndex, Radians angle, double height);
 
 		int getTextureEntryIndex() const;
-		double getAngleRadians() const;
+		Radians getAngle() const;
 		double getHeight() const;
 	};
 
@@ -134,23 +132,21 @@ private:
 	// Number of unique directions in 360 degrees.
 	static const int UNIQUE_ANGLES;
 
-	// Each texture entry holds its filename and 8-bit texture.
+	// Each texture entry holds its filename and optional index into a set of textures.
 	struct TextureEntry
 	{
-		std::string filename;
-		Buffer2D<uint8_t> texture;
+		TextureAssetReference textureAssetRef;
 
-		TextureEntry(std::string &&filename, Buffer2D<uint8_t> &&texture);
+		TextureEntry(TextureAssetReference &&textureAssetRef);
 	};
 
-	// Each texture set entry holds its filename and 8-bit textures. Intended only for
-	// animated distant objects.
+	// Each texture set entry holds its filename which points to a file with one or more textures.
+	// Intended only for animated distant objects.
 	struct TextureSetEntry
 	{
 		std::string filename;
-		Buffer<Buffer2D<uint8_t>> textures;
 
-		TextureSetEntry(std::string &&filename, Buffer<Buffer2D<uint8_t>> &&textures);
+		TextureSetEntry(std::string &&filename);
 	};
 
 	// Each object's texture index points into here.
@@ -175,7 +171,7 @@ public:
 	// The size of textures in world space is based on 320px being 1 unit, and a 320px
 	// wide texture spans a screen's worth of horizontal FOV in the original game.
 	static const double IDENTITY_DIM;
-	static const double IDENTITY_ANGLE_RADIANS;
+	static const Radians IDENTITY_ANGLE;
 
 	void init(const LocationDefinition &locationDef, const ProvinceDefinition &provinceDef,
 		WeatherType weatherType, int currentDay, int starCount, const ExeData &exeData,
@@ -195,16 +191,10 @@ public:
 	const StarObject &getStarObject(int index) const;
 	int getSunEntryIndex() const;
 
-	BufferView2D<const uint8_t> getTexture(int index) const;
+	const TextureAssetReference &getTextureAssetRef(int index) const;
 
-	// Gets the number of textures in the texture set at the given index.
-	int getTextureSetCount(int index) const;
-
-	// Gets the texture at the given element index in the given texture set.
-	BufferView2D<const uint8_t> getTextureSetElement(int index, int elementIndex) const;
-
-	// Added in the new engine for fun. Gets the number of stars for some density.
-	static int getStarCountFromDensity(int starDensity);
+	// Gets the filename for the given texture set.
+	const std::string &getTextureSetFilename(int index) const;
 
 	void tick(double dt);
 };

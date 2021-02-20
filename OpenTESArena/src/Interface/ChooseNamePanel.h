@@ -5,8 +5,7 @@
 
 #include "Button.h"
 #include "Panel.h"
-#include "../Entities/CharacterClass.h"
-#include "../Rendering/Texture.h"
+#include "Texture.h"
 
 // If Escape is pressed here, just go to the class list (even if the user went
 // the answer questions path instead).
@@ -23,19 +22,16 @@ class TextBox;
 class ChooseNamePanel : public Panel
 {
 private:
-	static const int MAX_NAME_LENGTH;
-
 	Texture parchment;
 	std::unique_ptr<TextBox> titleTextBox, nameTextBox;
 	Button<Game&> backToClassButton;
-	Button<Game&, const CharacterClass&, const std::string&> acceptButton;
-	CharacterClass charClass;
+	Button<Game&, const std::string&> acceptButton;
 	std::string name;
 public:
-	ChooseNamePanel(Game &game, const CharacterClass &charClass);
+	ChooseNamePanel(Game &game);
 	virtual ~ChooseNamePanel() = default;
 
-	virtual Panel::CursorData getCurrentCursor() const override;
+	virtual std::optional<Panel::CursorData> getCurrentCursor() const override;
 	virtual void handleEvent(const SDL_Event &e) override;
 	virtual void render(Renderer &renderer) override;
 };

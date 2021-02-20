@@ -12,146 +12,159 @@
 #include "TextBox.h"
 #include "TextCinematicPanel.h"
 #include "TextSubPanel.h"
+#include "Texture.h"
+#include "../Assets/ArenaPaletteName.h"
+#include "../Assets/ArenaTextureName.h"
+#include "../Assets/ArenaTypes.h"
+#include "../Assets/BinaryAssetLibrary.h"
 #include "../Assets/CIFFile.h"
 #include "../Assets/ExeData.h"
 #include "../Assets/MIFFile.h"
-#include "../Assets/MiscAssets.h"
 #include "../Entities/Player.h"
+#include "../Game/CardinalDirection.h"
 #include "../Game/GameData.h"
 #include "../Game/Game.h"
 #include "../Game/Options.h"
 #include "../Game/PlayerInterface.h"
 #include "../Math/Random.h"
 #include "../Media/Color.h"
-#include "../Media/FontManager.h"
+#include "../Media/FontLibrary.h"
 #include "../Media/FontName.h"
-#include "../Media/MusicFile.h"
-#include "../Media/MusicName.h"
 #include "../Media/MusicUtils.h"
-#include "../Media/PaletteFile.h"
-#include "../Media/PaletteName.h"
 #include "../Media/PortraitFile.h"
-#include "../Media/TextureFile.h"
 #include "../Media/TextureManager.h"
-#include "../Media/TextureName.h"
-#include "../Media/TextureSequenceName.h"
+#include "../Rendering/ArenaRenderUtils.h"
 #include "../Rendering/Renderer.h"
-#include "../Rendering/Texture.h"
 #include "../World/ClimateType.h"
 #include "../World/LocationType.h"
 #include "../World/LocationUtils.h"
+#include "../World/SkyUtils.h"
 #include "../World/WeatherType.h"
 
 #include "components/debug/Debug.h"
 #include "components/utilities/String.h"
 
-ChooseAttributesPanel::ChooseAttributesPanel(Game &game,
-	const CharacterClass &charClass, const std::string &name, 
-	GenderName gender, int raceID)
-	: Panel(game), charClass(charClass), gender(gender), name(name)
+ChooseAttributesPanel::ChooseAttributesPanel(Game &game)
+	: Panel(game)
 {
-	this->nameTextBox = [&game, &name]()
+	auto &charCreationState = game.getCharacterCreationState();
+
+	this->nameTextBox = [&game, &charCreationState]()
 	{
 		const int x = 10;
 		const int y = 8;
 
+		const std::string_view name = charCreationState.getName();
+
+		const auto &fontLibrary = game.getFontLibrary();
 		const RichTextString richText(
-			name,
+			std::string(name),
 			FontName::Arena,
 			Color(199, 199, 199),
 			TextAlignment::Left,
-			game.getFontManager());
+			fontLibrary);
 
-		return std::make_unique<TextBox>(x, y, richText, game.getRenderer());
+		return std::make_unique<TextBox>(x, y, richText, fontLibrary, game.getRenderer());
 	}();
 
-	this->raceTextBox = [&game, raceID]()
+	this->raceTextBox = [&game, &charCreationState]()
 	{
 		const int x = 10;
 		const int y = 17;
 
-		const auto &exeData = game.getMiscAssets().getExeData();
-		const std::string &text = exeData.races.singularNames.at(raceID);
+		const auto &exeData = game.getBinaryAssetLibrary().getExeData();
+		const auto &singularNames = exeData.races.singularNames;
+		const int raceIndex = charCreationState.getRaceIndex();
+		DebugAssertIndex(singularNames, raceIndex);
+		const std::string &text = singularNames[raceIndex];
 
+		const auto &fontLibrary = game.getFontLibrary();
 		const RichTextString richText(
 			text,
 			FontName::Arena,
 			Color(199, 199, 199),
 			TextAlignment::Left,
-			game.getFontManager());
+			fontLibrary);
 
-		return std::make_unique<TextBox>(x, y, richText, game.getRenderer());
+		return std::make_unique<TextBox>(x, y, richText, fontLibrary, game.getRenderer());
 	}();
 
-	this->classTextBox = [&game, &charClass]()
+	this->classTextBox = [&game, &charCreationState]()
 	{
 		const int x = 10;
 		const int y = 26;
 
+		const int charClassDefID = charCreationState.getClassDefID();
+		const auto &charClassLibrary = game.getCharacterClassLibrary();
+		const auto &charClassDef = charClassLibrary.getDefinition(charClassDefID);
+
+		const auto &fontLibrary = game.getFontLibrary();
 		const RichTextString richText(
-			charClass.getName(),
+			charClassDef.getName(),
 			FontName::Arena,
 			Color(199, 199, 199),
 			TextAlignment::Left,
-			game.getFontManager());
+			fontLibrary);
 
-		return std::make_unique<TextBox>(x, y, richText, game.getRenderer());
+		return std::make_unique<TextBox>(x, y, richText, fontLibrary, game.getRenderer());
 	}();
 
-	this->backToRaceButton = [&charClass, &name, gender]()
+	this->backToRaceButton = []()
 	{
-		auto function = [charClass, name, gender](Game &game)
+		auto function = [](Game &game)
 		{
-			game.setPanel<ChooseRacePanel>(game, charClass, name, gender);
+			game.setPanel<ChooseRacePanel>(game);
 		};
+
 		return Button<Game&>(function);
 	}();
 
-	this->doneButton = [this, &charClass, &name, gender, raceID]()
+	this->doneButton = [this]()
 	{
-		const Int2 center(25, Renderer::ORIGINAL_HEIGHT - 15);
+		const Int2 center(25, ArenaRenderUtils::SCREEN_HEIGHT - 15);
 		const int width = 21;
 		const int height = 12;
 
-		auto function = [this, charClass, name, gender, raceID](Game &game)
+		auto function = [this](Game &game)
 		{
 			// Generate the race selection message box.
 			auto &textureManager = game.getTextureManager();
 			auto &renderer = game.getRenderer();
 
 			MessageBoxSubPanel::Title messageBoxTitle;
-			messageBoxTitle.textBox = [&game, raceID, &renderer]()
+			messageBoxTitle.textBox = [&game, &renderer]()
 			{
-				const auto &exeData = game.getMiscAssets().getExeData();
+				const auto &exeData = game.getBinaryAssetLibrary().getExeData();
 				const std::string &text = exeData.charCreation.chooseAttributes;
 
 				const Color textColor(199, 199, 199);
 
+				const auto &fontLibrary = game.getFontLibrary();
 				const RichTextString richText(
 					text,
 					FontName::A,
 					textColor,
 					TextAlignment::Center,
-					game.getFontManager());
+					fontLibrary);
 
 				const Int2 center(
-					(Renderer::ORIGINAL_WIDTH / 2),
-					(Renderer::ORIGINAL_HEIGHT / 2) - 22);
+					(ArenaRenderUtils::SCREEN_WIDTH / 2),
+					(ArenaRenderUtils::SCREEN_HEIGHT / 2) - 22);
 
-				return std::make_unique<TextBox>(center, richText, renderer);
+				return std::make_unique<TextBox>(center, richText, fontLibrary, renderer);
 			}();
 
 			messageBoxTitle.texture = [&textureManager, &renderer, &messageBoxTitle]()
 			{
 				const int width = messageBoxTitle.textBox->getRect().getWidth() + 12;
 				const int height = 24;
-				return Texture::generate(Texture::PatternType::Dark,
+				return TextureUtils::generate(TextureUtils::PatternType::Dark,
 					width, height, textureManager, renderer);
 			}();
 
-			messageBoxTitle.textureX = (Renderer::ORIGINAL_WIDTH / 2) -
+			messageBoxTitle.textureX = (ArenaRenderUtils::SCREEN_WIDTH / 2) -
 				(messageBoxTitle.texture.getWidth() / 2) - 1;
-			messageBoxTitle.textureY = (Renderer::ORIGINAL_HEIGHT / 2) -
+			messageBoxTitle.textureY = (ArenaRenderUtils::SCREEN_HEIGHT / 2) -
 				(messageBoxTitle.texture.getHeight() / 2) - 21;
 
 			const Color buttonTextColor(190, 113, 0);
@@ -159,36 +172,37 @@ ChooseAttributesPanel::ChooseAttributesPanel(Game &game,
 			MessageBoxSubPanel::Element messageBoxSave;
 			messageBoxSave.textBox = [&game, &renderer, &buttonTextColor]()
 			{
-				const auto &exeData = game.getMiscAssets().getExeData();
+				const auto &exeData = game.getBinaryAssetLibrary().getExeData();
 				std::string text = exeData.charCreation.chooseAttributesSave;
 
 				// @todo: use the formatting characters in the string for color.
 				// - For now, just delete them.
 				text.erase(1, 2);
 
+				const auto &fontLibrary = game.getFontLibrary();
 				const RichTextString richText(
 					text,
 					FontName::A,
 					buttonTextColor,
 					TextAlignment::Center,
-					game.getFontManager());
+					fontLibrary);
 
 				const Int2 center(
-					(Renderer::ORIGINAL_WIDTH / 2) - 1,
-					(Renderer::ORIGINAL_HEIGHT / 2) + 2);
+					(ArenaRenderUtils::SCREEN_WIDTH / 2) - 1,
+					(ArenaRenderUtils::SCREEN_HEIGHT / 2) + 2);
 
-				return std::make_unique<TextBox>(center, richText, renderer);
+				return std::make_unique<TextBox>(center, richText, fontLibrary, renderer);
 			}();
 
 			messageBoxSave.texture = [&textureManager, &renderer, &messageBoxTitle]()
 			{
 				const int width = messageBoxTitle.texture.getWidth();
 				const int height = messageBoxTitle.texture.getHeight();
-				return Texture::generate(Texture::PatternType::Dark,
+				return TextureUtils::generate(TextureUtils::PatternType::Dark,
 					width, height, textureManager, renderer);
 			}();
 
-			messageBoxSave.function = [this, charClass, name, gender, raceID](Game &game)
+			messageBoxSave.function = [this](Game &game)
 			{
 				// Confirming the chosen stats will bring up a text sub-panel, and
 				// the next time the done button is clicked, it starts the game.
@@ -198,7 +212,7 @@ ChooseAttributesPanel::ChooseAttributesPanel(Game &game,
 
 				const std::string text = [&game]()
 				{
-					const auto &exeData = game.getMiscAssets().getExeData();
+					const auto &exeData = game.getBinaryAssetLibrary().getExeData();
 					std::string segment = exeData.charCreation.chooseAppearance;
 					segment = String::replace(segment, '\r', '\n');
 
@@ -213,79 +227,114 @@ ChooseAttributesPanel::ChooseAttributesPanel(Game &game,
 					color,
 					TextAlignment::Center,
 					lineSpacing,
-					game.getFontManager());
+					game.getFontLibrary());
 
-				Texture texture = Texture::generate(Texture::PatternType::Dark,
+				Texture texture = TextureUtils::generate(TextureUtils::PatternType::Dark,
 					richText.getDimensions().x + 10, richText.getDimensions().y + 12,
 					game.getTextureManager(), game.getRenderer());
 
 				const Int2 textureCenter(
-					(Renderer::ORIGINAL_WIDTH / 2) - 1,
-					(Renderer::ORIGINAL_HEIGHT / 2) - 1);
+					(ArenaRenderUtils::SCREEN_WIDTH / 2) - 1,
+					(ArenaRenderUtils::SCREEN_HEIGHT / 2) - 1);
 
 				// The done button is replaced after the player confirms their stats,
 				// and it then leads to the main quest opening cinematic.
-				auto newDoneFunction = [this, charClass, name, gender, raceID](Game &game)
+				auto newDoneFunction = [this](Game &game)
 				{
 					game.popSubPanel();
 
-					auto gameDataFunction = [this, charClass, name, gender, raceID](Game &game)
+					auto gameDataFunction = [this](Game &game)
 					{
 						// Initialize 3D renderer.
 						auto &renderer = game.getRenderer();
 						const auto &options = game.getOptions();
-						const auto &miscAssets = game.getMiscAssets();
+						const auto &binaryAssetLibrary = game.getBinaryAssetLibrary();
 						const bool fullGameWindow = options.getGraphics_ModernInterface();
 						renderer.initializeWorldRendering(
 							options.getGraphics_ResolutionScale(),
 							fullGameWindow,
 							options.getGraphics_RenderThreadsMode());
 
-						std::unique_ptr<GameData> gameData = [this, &name, gender, raceID,
-							&charClass, &miscAssets]()
+						std::unique_ptr<GameData> gameData = [this, &game, &binaryAssetLibrary]()
 						{
-							const auto &exeData = miscAssets.getExeData();
+							const auto &exeData = binaryAssetLibrary.getExeData();
 
 							// Initialize player data (independent of the world).
-							Player player = [this, &name, gender, raceID, &charClass, &exeData]()
+							Player player = [this, &game, &exeData]()
 							{
-								const Double3 dummyPosition = Double3::Zero;
-								const Double3 direction = Double3::UnitX;
+								const CoordDouble3 dummyPosition(ChunkInt2::Zero, VoxelDouble3::Zero);
+								const Double3 direction(
+									CardinalDirection::North.x,
+									0.0,
+									CardinalDirection::North.y);
 								const Double3 velocity = Double3::Zero;
 
-								Random random;
-								const auto &allowedWeapons = charClass.getAllowedWeapons();
-								const int weaponID = allowedWeapons.at(
-									random.next(static_cast<int>(allowedWeapons.size())));
+								const auto &charCreationState = game.getCharacterCreationState();
+								const std::string_view name = charCreationState.getName();
+								const bool male = charCreationState.isMale();
+								const int raceIndex = charCreationState.getRaceIndex();
 
-								return Player(name, gender, raceID, charClass, this->portraitID,
-									dummyPosition, direction, velocity, Player::DEFAULT_WALK_SPEED,
-									Player::DEFAULT_RUN_SPEED, weaponID, exeData);
+								const auto &charClassLibrary = game.getCharacterClassLibrary();
+								const int charClassDefID = charCreationState.getClassDefID();
+								const auto &charClassDef = charClassLibrary.getDefinition(charClassDefID);
+
+								const int portraitIndex = charCreationState.getPortraitIndex();
+
+								const int allowedWeaponCount = charClassDef.getAllowedWeaponCount();
+								const int weaponID = charClassDef.getAllowedWeapon(
+									game.getRandom().next(allowedWeaponCount));
+
+								return Player(std::string(name), male, raceIndex, charClassDefID,
+									portraitIndex, dummyPosition, direction, velocity,
+									Player::DEFAULT_WALK_SPEED, Player::DEFAULT_RUN_SPEED, weaponID,
+									exeData);
 							}();
 
-							return std::make_unique<GameData>(std::move(player), miscAssets);
+							return std::make_unique<GameData>(std::move(player), binaryAssetLibrary);
 						}();
 
-						// Set palette (important for texture loading).
-						auto &textureManager = game.getTextureManager();
-						textureManager.setPalette(PaletteFile::fromName(PaletteName::Default));
+						// Find starting dungeon location definition.
+						const int provinceIndex = LocationUtils::CENTER_PROVINCE_ID;
+						const WorldMapDefinition &worldMapDef = gameData->getWorldMapDefinition();
+						const ProvinceDefinition &provinceDef = worldMapDef.getProvinceDef(provinceIndex);
+
+						const LocationDefinition *locationDefPtr = nullptr;
+						for (int i = 0; i < provinceDef.getLocationCount(); i++)
+						{
+							const LocationDefinition &locationDef = provinceDef.getLocationDef(i);
+							if (locationDef.getType() == LocationDefinition::Type::MainQuestDungeon)
+							{
+								const LocationDefinition::MainQuestDungeonDefinition &mainQuestDungeonDef =
+									locationDef.getMainQuestDungeonDefinition();
+
+								if (mainQuestDungeonDef.type == LocationDefinition::MainQuestDungeonDefinition::Type::Start)
+								{
+									locationDefPtr = &locationDef;
+									break;
+								}
+							}
+						}
+
+						DebugAssertMsg(locationDefPtr != nullptr, "Couldn't find start dungeon location definition.");
 
 						// Load starting dungeon.
-						const auto &exeData = miscAssets.getExeData();
-						const std::string mifName = String::toUppercase(
-							exeData.locations.startDungeonMifName);
-						
+						const LocationDefinition::MainQuestDungeonDefinition &mainQuestDungeonDef =
+							locationDefPtr->getMainQuestDungeonDefinition();
+						const std::string mifName = mainQuestDungeonDef.mapFilename;
+
 						MIFFile mif;
 						if (!mif.init(mifName.c_str()))
 						{
 							DebugCrash("Could not init .MIF file \"" + mifName + "\".");
 						}
 
-						const int provinceID = LocationUtils::CENTER_PROVINCE_ID;
-						const Location location = Location::makeSpecialCase(
-							Location::SpecialCaseType::StartDungeon, provinceID);
-						gameData->loadInterior(VoxelDefinition::WallData::MenuType::Dungeon,
-							mif, location, miscAssets, textureManager, renderer);
+						if (!gameData->loadInterior(*locationDefPtr, provinceDef, ArenaTypes::InteriorType::Dungeon,
+							mif, game.getEntityDefinitionLibrary(), game.getCharacterClassLibrary(),
+							game.getBinaryAssetLibrary(), game.getRandom(), game.getTextureManager(),
+							renderer))
+						{
+							DebugCrash("Couldn't load interior \"" + locationDefPtr->getName() + "\".");
+						}
 
 						// Set the game data before constructing the game world panel.
 						game.setGameData(std::move(gameData));
@@ -295,26 +344,6 @@ ChooseAttributesPanel::ChooseAttributesPanel(Game &game,
 					{
 						gameDataFunction(game);
 
-						// The original game wraps text onto the next screen if the player's name
-						// is too long. For example, it causes "listen to me" to go down one line
-						// and "Imperial Battle" to go onto the next screen, which then pushes the
-						// text for every subsequent screen forward by a little bit.
-
-						// Read cinematic text from TEMPLATE.DAT.
-						const auto &templateDat = game.getMiscAssets().getTemplateDat();
-						const auto &entry = templateDat.getEntry(1400);
-						std::string cinematicText = entry.values.front();
-						cinematicText.append("\n");
-
-						// Replace all instances of %pcf with the player's first name.
-						const std::string playerName =
-							game.getGameData().getPlayer().getFirstName();
-						cinematicText = String::replace(cinematicText, "%pcf", playerName);
-
-						// Some more formatting should be done in the future so the text wraps
-						// nicer. That is, replace all new lines with spaces and redistribute new
-						// lines given some max line length value.
-
 						auto gameFunction = [](Game &game)
 						{
 							// Create the function that will be called when the player leaves
@@ -322,25 +351,23 @@ ChooseAttributesPanel::ChooseAttributesPanel(Game &game,
 							auto onLevelUpVoxelEnter = [](Game &game)
 							{
 								// Teleport the player to a random location based on their race.
-								const auto &miscAssets = game.getMiscAssets();
 								auto &gameData = game.getGameData();
 								auto &player = gameData.getPlayer();
 								player.setVelocityToZero();
 
-								Random random;
-								const int localCityID = random.next(32);
+								const int localCityID = game.getRandom().next(32);
 								const int provinceID = gameData.getPlayer().getRaceID();
 
-								const WorldMapDefinition &worldMapDef = miscAssets.getWorldMapDefinition();
+								const WorldMapDefinition &worldMapDef = gameData.getWorldMapDefinition();
 								const ProvinceDefinition &provinceDef = worldMapDef.getProvinceDef(provinceID);
 								const LocationDefinition &locationDef = provinceDef.getLocationDef(localCityID);
 
 								// Random weather for now.
 								// - @todo: make it depend on the location (no need to prevent
 								//   deserts from having snow since the climates are still hardcoded).
-								const WeatherType weatherType = [&random]()
+								const WeatherType weatherType = [&game]()
 								{
-									const std::array<WeatherType, 8> Weathers =
+									constexpr std::array<WeatherType, 8> Weathers =
 									{
 										WeatherType::Clear,
 										WeatherType::Overcast,
@@ -352,21 +379,51 @@ ChooseAttributesPanel::ChooseAttributesPanel(Game &game,
 										WeatherType::SnowOvercast2
 									};
 
-									return Weathers.at(random.next(
-										static_cast<int>(Weathers.size())));
+									const int index = game.getRandom().next(static_cast<int>(Weathers.size()));
+									DebugAssertIndex(Weathers, index);
+									return Weathers[index];
 								}();
 
-								const int starCount = DistantSky::getStarCountFromDensity(
+								const int starCount = SkyUtils::getStarCountFromDensity(
 									game.getOptions().getMisc_StarDensity());
 
 								auto &renderer = game.getRenderer();
-								gameData.loadCity(localCityID, provinceID, locationDef, provinceDef,
-									weatherType, starCount, miscAssets, game.getTextureManager(), renderer);
+								if (!gameData.loadCity(locationDef, provinceDef, weatherType, starCount,
+									game.getEntityDefinitionLibrary(), game.getCharacterClassLibrary(),
+									game.getBinaryAssetLibrary(), game.getTextAssetLibrary(), game.getRandom(),
+									game.getTextureManager(), renderer))
+								{
+									DebugCrash("Couldn't load city \"" + locationDef.getName() + "\".");
+								}
 
 								// Set music based on weather and time.
-								const MusicName musicName = gameData.nightMusicIsActive() ?
-									MusicName::Night : MusicFile::fromWeather(weatherType);
-								game.setMusic(musicName);
+								const MusicDefinition *musicDef = [&game, &gameData, weatherType]()
+								{
+									const MusicLibrary &musicLibrary = game.getMusicLibrary();
+									if (!gameData.nightMusicIsActive())
+									{
+										return musicLibrary.getRandomMusicDefinitionIf(MusicDefinition::Type::Weather,
+											game.getRandom(), [weatherType](const MusicDefinition &def)
+										{
+											DebugAssert(def.getType() == MusicDefinition::Type::Weather);
+											const auto &weatherMusicDef = def.getWeatherMusicDefinition();
+											return weatherMusicDef.type == weatherType;
+										});
+									}
+									else
+									{
+										return musicLibrary.getRandomMusicDefinition(
+											MusicDefinition::Type::Night, game.getRandom());
+									}
+								}();
+
+								if (musicDef == nullptr)
+								{
+									DebugLogWarning("Missing exterior music.");
+								}
+
+								AudioManager &audioManager = game.getAudioManager();
+								audioManager.setMusic(musicDef);
 							};
 
 							// Set the *LEVELUP voxel enter event.
@@ -378,21 +435,65 @@ ChooseAttributesPanel::ChooseAttributesPanel(Game &game,
 							game.setPanel(std::move(gameWorldPanel));
 
 							// Choose random dungeon music.
-							Random random;
-							const MusicName musicName = MusicUtils::getDungeonMusicName(random);
-							game.setMusic(musicName);
+							const MusicLibrary &musicLibrary = game.getMusicLibrary();
+							const MusicDefinition *musicDef = musicLibrary.getRandomMusicDefinition(
+								MusicDefinition::Type::Dungeon, game.getRandom());
+
+							if (musicDef == nullptr)
+							{
+								DebugLogWarning("Missing dungeon music.");
+							}
+
+							AudioManager &audioManager = game.getAudioManager();
+							audioManager.setMusic(musicDef);
 						};
 
-						game.setPanel<TextCinematicPanel>(
-							game,
-							TextureFile::fromName(TextureSequenceName::Silmane),
-							cinematicText,
-							0.171,
-							gameFunction);
-						game.setMusic(MusicName::Vision);
+						const auto &cinematicLibrary = game.getCinematicLibrary();
+						int textCinematicDefIndex;
+						const bool success = cinematicLibrary.findTextDefinitionIndexIf(
+							[](const TextCinematicDefinition &def)
+						{
+							if (def.getType() == TextCinematicDefinition::Type::MainQuest)
+							{
+								const auto &mainQuestCinematicDef = def.getMainQuestDefinition();
+								const bool isMainQuestStartCinematic = mainQuestCinematicDef.progress == 0;
+								if (isMainQuestStartCinematic)
+								{
+									return true;
+								}
+							}
+
+							return false;
+						}, &textCinematicDefIndex);
+
+						if (!success)
+						{
+							DebugCrash("Couldn't find main quest start text cinematic definition.");
+						}
+
+						game.setCharacterCreationState(nullptr);
+						game.setPanel<TextCinematicPanel>(game, textCinematicDefIndex, 0.171, gameFunction);
+
+						// Play dream music.
+						const MusicLibrary &musicLibrary = game.getMusicLibrary();
+						const MusicDefinition *musicDef = musicLibrary.getRandomMusicDefinitionIf(
+							MusicDefinition::Type::Cinematic, game.getRandom(), [](const MusicDefinition &def)
+						{
+							DebugAssert(def.getType() == MusicDefinition::Type::Cinematic);
+							const auto &cinematicMusicDef = def.getCinematicMusicDefinition();
+							return cinematicMusicDef.type == MusicDefinition::CinematicMusicDefinition::Type::DreamGood;
+						});
+
+						if (musicDef == nullptr)
+						{
+							DebugLogWarning("Missing vision music.");
+						}
+
+						AudioManager &audioManager = game.getAudioManager();
+						audioManager.setMusic(musicDef);
 					};
 
-					const Int2 center(25, Renderer::ORIGINAL_HEIGHT - 15);
+					const Int2 center(25, ArenaRenderUtils::SCREEN_HEIGHT - 15);
 					const int width = 21;
 					const int height = 12;
 
@@ -414,32 +515,33 @@ ChooseAttributesPanel::ChooseAttributesPanel(Game &game,
 			MessageBoxSubPanel::Element messageBoxReroll;
 			messageBoxReroll.textBox = [&game, &renderer, &buttonTextColor]()
 			{
-				const auto &exeData = game.getMiscAssets().getExeData();
+				const auto &exeData = game.getBinaryAssetLibrary().getExeData();
 				std::string text = exeData.charCreation.chooseAttributesReroll;
 
 				// @todo: use the formatting characters in the string for color.
 				// - For now, just delete them.
 				text.erase(1, 2);
 
+				const auto &fontLibrary = game.getFontLibrary();
 				const RichTextString richText(
 					text,
 					FontName::A,
 					buttonTextColor,
 					TextAlignment::Center,
-					game.getFontManager());
+					fontLibrary);
 
 				const Int2 center(
-					(Renderer::ORIGINAL_WIDTH / 2) - 1,
-					(Renderer::ORIGINAL_HEIGHT / 2) + 26);
+					(ArenaRenderUtils::SCREEN_WIDTH / 2) - 1,
+					(ArenaRenderUtils::SCREEN_HEIGHT / 2) + 26);
 
-				return std::make_unique<TextBox>(center, richText, renderer);
+				return std::make_unique<TextBox>(center, richText, fontLibrary, renderer);
 			}();
 
 			messageBoxReroll.texture = [&textureManager, &renderer, &messageBoxSave]()
 			{
 				const int width = messageBoxSave.texture.getWidth();
 				const int height = messageBoxSave.texture.getHeight();
-				return Texture::generate(Texture::PatternType::Dark,
+				return TextureUtils::generate(TextureUtils::PatternType::Dark,
 					width, height, textureManager, renderer);
 			}();
 
@@ -472,30 +574,29 @@ ChooseAttributesPanel::ChooseAttributesPanel(Game &game,
 
 	this->portraitButton = []()
 	{
-		const Int2 center(Renderer::ORIGINAL_WIDTH - 72, 25);
+		const Int2 center(ArenaRenderUtils::SCREEN_WIDTH - 72, 25);
 		const int width = 60;
 		const int height = 42;
 		auto function = [](ChooseAttributesPanel &panel, bool increment)
 		{
-			const int minID = 0;
+			const int minID = 0; // @todo: de-hardcode so it relies on portraits list
 			const int maxID = 9;
 
-			if (increment)
-			{
-				panel.portraitID = (panel.portraitID == maxID) ?
-					minID : (panel.portraitID + 1);
-			}
-			else
-			{
-				panel.portraitID = (panel.portraitID == minID) ?
-					maxID : (panel.portraitID - 1);
-			}
+			auto &charCreationState = panel.getGame().getCharacterCreationState();
+			const int oldPortraitIndex = charCreationState.getPortraitIndex();			
+			const int newPortraitIndex = increment ?
+				((oldPortraitIndex == maxID) ? minID : (oldPortraitIndex + 1)) :
+				((oldPortraitIndex == minID) ? maxID : (oldPortraitIndex - 1));
+
+			charCreationState.setPortraitIndex(newPortraitIndex);
 		};
+
 		return Button<ChooseAttributesPanel&, bool>(center, width, height, function);
 	}();
 
 	// Get pixel offsets for each head.
-	const std::string &headsFilename = PortraitFile::getHeads(gender, raceID, false);
+	const std::string headsFilename = PortraitFile::getHeads(
+		charCreationState.isMale(), charCreationState.getRaceIndex(), false);
 	CIFFile cifFile;
 	if (!cifFile.init(headsFilename.c_str()))
 	{
@@ -507,24 +608,22 @@ ChooseAttributesPanel::ChooseAttributesPanel(Game &game,
 		this->headOffsets.push_back(Int2(cifFile.getXOffset(i), cifFile.getYOffset(i)));
 	}
 
-	this->raceID = raceID;
-	this->portraitID = 0;
+	charCreationState.setPortraitIndex(0);
 	this->canChangePortrait = false;
 
 	// Push the initial text pop-up onto the sub-panel stack.
 	std::unique_ptr<Panel> textSubPanel = [&game]()
 	{
 		const Int2 center(
-			(Renderer::ORIGINAL_WIDTH / 2) - 1,
-			(Renderer::ORIGINAL_HEIGHT / 2) - 2);
+			(ArenaRenderUtils::SCREEN_WIDTH / 2) - 1,
+			(ArenaRenderUtils::SCREEN_HEIGHT / 2) - 2);
 		const Color color(199, 199, 199);
 
 		const std::string text = [&game]()
 		{
-			const auto &exeData = game.getMiscAssets().getExeData();
+			const auto &exeData = game.getBinaryAssetLibrary().getExeData();
 			std::string segment = exeData.charCreation.distributeClassPoints;
 			segment = String::replace(segment, '\r', '\n');
-
 			return segment;
 		}();
 
@@ -536,14 +635,14 @@ ChooseAttributesPanel::ChooseAttributesPanel(Game &game,
 			color,
 			TextAlignment::Center,
 			lineSpacing,
-			game.getFontManager());
+			game.getFontLibrary());
 
-		Texture texture = Texture::generate(Texture::PatternType::Dark, 183, 42,
+		Texture texture = TextureUtils::generate(TextureUtils::PatternType::Dark, 183, 42,
 			game.getTextureManager(), game.getRenderer());
 
 		const Int2 textureCenter(
-			(Renderer::ORIGINAL_WIDTH / 2) - 1,
-			(Renderer::ORIGINAL_HEIGHT / 2) - 1);
+			(ArenaRenderUtils::SCREEN_WIDTH / 2) - 1,
+			(ArenaRenderUtils::SCREEN_HEIGHT / 2) - 1);
 
 		auto function = [](Game &game)
 		{
@@ -557,15 +656,9 @@ ChooseAttributesPanel::ChooseAttributesPanel(Game &game,
 	game.pushSubPanel(std::move(textSubPanel));
 }
 
-Panel::CursorData ChooseAttributesPanel::getCurrentCursor() const
+std::optional<Panel::CursorData> ChooseAttributesPanel::getCurrentCursor() const
 {
-	auto &game = this->getGame();
-	auto &renderer = game.getRenderer();
-	auto &textureManager = game.getTextureManager();
-	const auto &texture = textureManager.getTexture(
-		TextureFile::fromName(TextureName::SwordCursor),
-		PaletteFile::fromName(PaletteName::Default), renderer);
-	return CursorData(&texture, CursorAlignment::TopLeft);
+	return this->getDefaultCursor();
 }
 
 void ChooseAttributesPanel::handleEvent(const SDL_Event &e)
@@ -615,40 +708,70 @@ void ChooseAttributesPanel::render(Renderer &renderer)
 	// Clear full screen.
 	renderer.clear();
 
-	// Set palette.
-	auto &textureManager = this->getGame().getTextureManager();
-	textureManager.setPalette(PaletteFile::fromName(PaletteName::CharSheet));
+	auto &game = this->getGame();
+	const auto &charCreationState = game.getCharacterCreationState();
+	const bool male = charCreationState.isMale();
+	const int raceIndex = charCreationState.getRaceIndex();
+	const int portraitIndex = charCreationState.getPortraitIndex();
+	const auto &charClassDef = [&game, &charCreationState]() -> const CharacterClassDefinition&
+	{
+		const auto &charClassLibrary = game.getCharacterClassLibrary();
+		const int charClassDefID = charCreationState.getClassDefID();
+		return charClassLibrary.getDefinition(charClassDefID);
+	}();
+
+	auto &textureManager = game.getTextureManager();
+	const std::string &charSheetPaletteFilename = ArenaPaletteName::CharSheet;
+	const std::optional<PaletteID> charSheetPaletteID = textureManager.tryGetPaletteID(charSheetPaletteFilename.c_str());
+	if (!charSheetPaletteID.has_value())
+	{
+		DebugLogError("Couldn't get character sheet palette ID \"" + charSheetPaletteFilename + "\".");
+		return;
+	}
 
 	// Get the filenames for the portrait and clothes.
-	const std::string &headsFilename = PortraitFile::getHeads(
-		this->gender, this->raceID, false);
-	const std::string &bodyFilename = PortraitFile::getBody(
-		this->gender, this->raceID);
-	const std::string &shirtFilename = PortraitFile::getShirt(
-		this->gender, this->charClass.canCastMagic());
-	const std::string &pantsFilename = PortraitFile::getPants(this->gender);
+	const std::string &headsFilename = PortraitFile::getHeads(male, raceIndex, false);
+	const std::string &bodyFilename = PortraitFile::getBody(male, raceIndex);
+	const std::string &shirtFilename = PortraitFile::getShirt(male, charClassDef.canCastMagic());
+	const std::string &pantsFilename = PortraitFile::getPants(male);
 
 	// Get pixel offsets for each clothes texture.
-	const Int2 &shirtOffset = PortraitFile::getShirtOffset(
-		this->gender, this->charClass.canCastMagic());
-	const Int2 &pantsOffset = PortraitFile::getPantsOffset(this->gender);
+	const Int2 shirtOffset = PortraitFile::getShirtOffset(male, charClassDef.canCastMagic());
+	const Int2 pantsOffset = PortraitFile::getPantsOffset(male);
 
 	// Draw the current portrait and clothes.
-	const Int2 &headOffset = this->headOffsets.at(this->portraitID);
-	const auto &head = textureManager.getTextures(headsFilename,
-		PaletteFile::fromName(PaletteName::CharSheet), renderer).at(this->portraitID);
-	const auto &body = textureManager.getTexture(bodyFilename, renderer);
-	const auto &shirt = textureManager.getTexture(shirtFilename, renderer);
-	const auto &pants = textureManager.getTexture(pantsFilename, renderer);
-	renderer.drawOriginal(body, Renderer::ORIGINAL_WIDTH - body.getWidth(), 0);
-	renderer.drawOriginal(pants, pantsOffset.x, pantsOffset.y);
-	renderer.drawOriginal(head, headOffset.x, headOffset.y);
-	renderer.drawOriginal(shirt, shirtOffset.x, shirtOffset.y);
+	const Int2 &headOffset = this->headOffsets.at(portraitIndex);
+	const std::optional<TextureBuilderIdGroup> headTextureBuilderIDs =
+		textureManager.tryGetTextureBuilderIDs(headsFilename.c_str());
+	const std::optional<TextureBuilderID> bodyTextureBuilderID =
+		textureManager.tryGetTextureBuilderID(bodyFilename.c_str());
+	const std::optional<TextureBuilderID> shirtTextureBuilderID =
+		textureManager.tryGetTextureBuilderID(shirtFilename.c_str());
+	const std::optional<TextureBuilderID> pantsTextureBuilderID =
+		textureManager.tryGetTextureBuilderID(pantsFilename.c_str());
+	DebugAssert(headTextureBuilderIDs.has_value());
+	DebugAssert(bodyTextureBuilderID.has_value());
+	DebugAssert(shirtTextureBuilderID.has_value());
+	DebugAssert(pantsTextureBuilderID.has_value());
+	const TextureBuilderID headTextureBuilderID = headTextureBuilderIDs->getID(portraitIndex);
+
+	const int bodyTextureX = [&textureManager, &bodyTextureBuilderID]()
+	{
+		const TextureBuilder &bodyTexture = textureManager.getTextureBuilderHandle(*bodyTextureBuilderID);
+		return ArenaRenderUtils::SCREEN_WIDTH - bodyTexture.getWidth();
+	}();
+
+	renderer.drawOriginal(*bodyTextureBuilderID, *charSheetPaletteID, bodyTextureX, 0, textureManager);
+	renderer.drawOriginal(*pantsTextureBuilderID, *charSheetPaletteID, pantsOffset.x, pantsOffset.y, textureManager);
+	renderer.drawOriginal(headTextureBuilderID, *charSheetPaletteID, headOffset.x, headOffset.y, textureManager);
+	renderer.drawOriginal(*shirtTextureBuilderID, *charSheetPaletteID, shirtOffset.x, shirtOffset.y, textureManager);
 
 	// Draw attributes texture.
-	const auto &attributesBackground = textureManager.getTexture(
-		TextureFile::fromName(TextureName::CharacterStats), renderer);
-	renderer.drawOriginal(attributesBackground);
+	const std::string &charStatsBgFilename = ArenaTextureName::CharacterStats;
+	const std::optional<TextureBuilderID> attributesBgTextureBuilderID =
+		textureManager.tryGetTextureBuilderID(charStatsBgFilename.c_str());
+	DebugAssert(attributesBgTextureBuilderID.has_value());
+	renderer.drawOriginal(*attributesBgTextureBuilderID, *charSheetPaletteID, textureManager);
 
 	// Draw text boxes: player name, race, class.
 	renderer.drawOriginal(this->nameTextBox->getTexture(),

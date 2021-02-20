@@ -1,11 +1,10 @@
 #include <algorithm>
 #include <cmath>
 
-#include "Location.h"
-#include "LocationDataType.h"
 #include "LocationType.h"
 #include "LocationUtils.h"
-#include "../Assets/MiscAssets.h"
+#include "../Assets/BinaryAssetLibrary.h"
+#include "../Math/MathUtils.h"
 #include "../Math/Random.h"
 #include "../Math/Vector2.h"
 
@@ -15,16 +14,17 @@
 namespace LocationUtils
 {
 	// Parent function for getting the climate type of a location.
-	ClimateType getClimateType(int locationID, int provinceID, const MiscAssets &miscAssets)
+	ClimateType getClimateType(int locationID, int provinceID,
+		const BinaryAssetLibrary &binaryAssetLibrary)
 	{
-		const auto &cityData = miscAssets.getCityDataFile();
+		const auto &cityData = binaryAssetLibrary.getCityDataFile();
 		const auto &province = cityData.getProvinceData(provinceID);
 		const auto &location = province.getLocationData(locationID);
 		const Int2 localPoint(location.x, location.y);
 		const Int2 globalPoint = LocationUtils::getGlobalPoint(localPoint, province.getGlobalRect());
-		const auto &worldMapTerrain = miscAssets.getWorldMapTerrain();
+		const auto &worldMapTerrain = binaryAssetLibrary.getWorldMapTerrain();
 		const uint8_t terrain = worldMapTerrain.getFailSafeAt(globalPoint.x, globalPoint.y);
-		return MiscAssets::WorldMapTerrain::toClimateType(terrain);
+		return BinaryAssetLibrary::WorldMapTerrain::toClimateType(terrain);
 	}
 }
 
@@ -85,21 +85,22 @@ LocationType LocationUtils::getDungeonType(int localDungeonID)
 }
 
 ClimateType LocationUtils::getCityClimateType(int localCityID, int provinceID,
-	const MiscAssets &miscAssets)
+	const BinaryAssetLibrary &binaryAssetLibrary)
 {
 	const int locationID = LocationUtils::cityToLocationID(localCityID);
-	return LocationUtils::getClimateType(locationID, provinceID, miscAssets);
+	return LocationUtils::getClimateType(locationID, provinceID, binaryAssetLibrary);
 }
 
 ClimateType LocationUtils::getDungeonClimateType(int localDungeonID, int provinceID,
-	const MiscAssets &miscAssets)
+	const BinaryAssetLibrary &binaryAssetLibrary)
 {
 	const int locationID = LocationUtils::dungeonToLocationID(localDungeonID);
-	return LocationUtils::getClimateType(locationID, provinceID, miscAssets);
+	return LocationUtils::getClimateType(locationID, provinceID, binaryAssetLibrary);
 }
 
 std::string LocationUtils::getMainQuestDungeonMifName(uint32_t dungeonSeed)
 {
+	// @todo: robustness - should this use any padding?
 	const std::string seedString = std::to_string(dungeonSeed);
 	const std::string mifName = seedString.substr(0, 8) + ".MIF";
 	return mifName;
@@ -183,26 +184,14 @@ int LocationUtils::getMapDistance(const Int2 &globalSrc, const Int2 &globalDst)
 	return std::max(dx, dy) + (std::min(dx, dy) / 4);
 }
 
-int LocationUtils::getTravelDays(int startLocationID, int startProvinceID, int endLocationID,
-	int endProvinceID, int month, const std::array<WeatherType, 36> &weathers,
-	ArenaRandom &random, const MiscAssets &miscAssets)
+int LocationUtils::getTravelDays(const Int2 &startGlobalPoint, const Int2 &endGlobalPoint,
+	int month, const std::array<WeatherType, 36> &weathers, ArenaRandom &random,
+	const BinaryAssetLibrary &binaryAssetLibrary)
 {
-	const auto &cityData = miscAssets.getCityDataFile();
-
-	auto getGlobalPoint = [&cityData](int locationID, int provinceID)
-	{
-		const auto &province = cityData.getProvinceData(provinceID);
-		const auto &location = province.getLocationData(locationID);
-		const Int2 localPoint(location.x, location.y);
-		return LocationUtils::getGlobalPoint(localPoint, province.getGlobalRect());
-	};
-
-	// The two world map points to calculate between.
-	const Int2 startGlobalPoint = getGlobalPoint(startLocationID, startProvinceID);
-	const Int2 endGlobalPoint = getGlobalPoint(endLocationID, endProvinceID);
+	const auto &cityData = binaryAssetLibrary.getCityDataFile();
 
 	// Get all the points along the line between the two points.
-	const std::vector<Int2> points = Int2::bresenhamLine(startGlobalPoint, endGlobalPoint);
+	const std::vector<Int2> points = MathUtils::bresenhamLine(startGlobalPoint, endGlobalPoint);
 
 	int totalTime = 0;
 	for (const Int2 &point : points)
@@ -219,12 +208,12 @@ int LocationUtils::getTravelDays(int startLocationID, int startProvinceID, int e
 		}();
 
 		// The type of terrain at the world map point.
-		const auto &worldMapTerrain = miscAssets.getWorldMapTerrain();
-		const uint8_t terrainIndex = MiscAssets::WorldMapTerrain::getNormalizedIndex(
+		const auto &worldMapTerrain = binaryAssetLibrary.getWorldMapTerrain();
+		const uint8_t terrainIndex = BinaryAssetLibrary::WorldMapTerrain::getNormalizedIndex(
 			worldMapTerrain.getAt(point.x, point.y));
 
 		// Calculate the travel speed based on climate and weather.
-		const auto &exeData = miscAssets.getExeData();
+		const auto &exeData = binaryAssetLibrary.getExeData();
 		const auto &climateSpeedTables = exeData.locations.climateSpeedTables;
 		const auto &weatherSpeedTables = exeData.locations.weatherSpeedTables;
 		const int climateSpeed = climateSpeedTables.at(terrainIndex).at(monthIndex);

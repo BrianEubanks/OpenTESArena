@@ -3,24 +3,30 @@
 
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <vector>
 
-#include "SoftwareRenderer.h"
-#include "Texture.h"
+#include "RendererSystem2D.h"
+#include "RendererSystem3D.h"
+#include "RendererSystemType.h"
+#include "../Assets/ArenaTypes.h"
+#include "../Interface/Texture.h"
 #include "../Math/Vector2.h"
 #include "../Math/Vector3.h"
+#include "../Media/TextureUtils.h"
 #include "../World/LevelData.h"
 
-// Acts as a wrapper for SDL_Renderer operations as well as 3D rendering operations.
-
-// The format for all textures is ARGB8888.
+// Container for 2D and 3D rendering operations.
 
 class Color;
 class DistantSky;
+class EntityAnimationDefinition;
+class EntityAnimationInstance;
+class EntityDefinitionLibrary;
 class EntityManager;
-class Palette;
 class Rect;
 class Surface;
+class TextureManager;
 class VoxelGrid;
 
 enum class CursorAlignment;
@@ -53,22 +59,38 @@ public:
 		// Internal renderer resolution.
 		int width, height;
 
+		int threadCount;
+
 		// Visible flats and lights.
 		int potentiallyVisFlatCount, visFlatCount, visLightCount;
 
 		double frameTime;
 
 		ProfilerData();
+
+		void init(int width, int height, int threadCount, int potentiallyVisFlatCount,
+			int visFlatCount, int visLightCount, double frameTime);
 	};
 private:
+	struct TextureInstance
+	{
+		TextureBuilderID textureBuilderID;
+		PaletteID paletteID;
+		Texture texture;
+
+		void init(TextureBuilderID textureBuilderID, PaletteID paletteID, Texture &&texture);
+	};
+
 	static const char *DEFAULT_RENDER_SCALE_QUALITY;
 	static const char *DEFAULT_TITLE;
 
+	std::unique_ptr<RendererSystem2D> renderer2D;
+	std::unique_ptr<RendererSystem3D> renderer3D;
 	std::vector<DisplayMode> displayModes;
+	std::vector<TextureInstance> textureInstances; // @temp placeholder until the renderer returns allocated texture handles.
 	SDL_Window *window;
 	SDL_Renderer *renderer;
 	Texture nativeTexture, gameWorldTexture; // Frame buffers.
-	SoftwareRenderer softwareRenderer; // Game world renderer.
 	ProfilerData profilerData;
 	int letterboxMode; // Determines aspect ratio of the original UI (16:10, 4:3, etc.).
 	bool fullGameWindow; // Determines height of 3D frame buffer.
@@ -78,14 +100,15 @@ private:
 
 	// Generates a renderer dimension while avoiding pitfalls of numeric imprecision.
 	static int makeRendererDimension(int value, double resolutionScale);
+
+	std::optional<int> tryGetTextureInstanceIndex(TextureBuilderID textureBuilderID, PaletteID paletteID) const;
+	void addTextureInstance(TextureBuilderID textureBuilderID, PaletteID paletteID, const TextureManager &textureManager);
+	const Texture *getOrAddTextureInstance(TextureBuilderID textureBuilderID, PaletteID paletteID,
+		const TextureManager &textureManager);
 public:
 	// Only defined so members are initialized for Game ctor exception handling.
 	Renderer();
 	~Renderer();
-
-	// Original screen dimensions.
-	static const int ORIGINAL_WIDTH;
-	static const int ORIGINAL_HEIGHT;
 
 	// Default bits per pixel.
 	static const int DEFAULT_BPP;
@@ -125,9 +148,9 @@ public:
 	// Returns whether the entity was able to be tested and was hit by the ray. This is a renderer
 	// function because the exact method of testing may depend on the 3D representation of the entity.
 	bool getEntityRayIntersection(const EntityManager::EntityVisibilityData &visData,
-		int flatIndex, const Double3 &entityForward, const Double3 &entityRight,
-		const Double3 &entityUp, double entityWidth, double entityHeight, const Double3 &rayPoint,
-		const Double3 &rayDirection, bool pixelPerfect, Double3 *outHitPoint) const;
+		const Double3 &entityForward, const Double3 &entityRight, const Double3 &entityUp,
+		double entityWidth, double entityHeight, const Double3 &rayPoint,
+		const Double3 &rayDirection, bool pixelPerfect, const Palette &palette, Double3 *outHitPoint) const;
 
 	// Converts a [0, 1] screen point to a ray through the world. The exact direction is
 	// dependent on renderer details.
@@ -151,7 +174,8 @@ public:
 	Texture createTexture(uint32_t format, int access, int w, int h);
 	Texture createTextureFromSurface(const Surface &surface);
 
-	void init(int width, int height, WindowMode windowMode, int letterboxMode);
+	bool init(int width, int height, WindowMode windowMode, int letterboxMode,
+		RendererSystemType2D systemType2D, RendererSystemType3D systemType3D);
 
 	// Resizes the renderer dimensions.
 	void resize(int width, int height, double resolutionScale, bool fullGameWindow);
@@ -185,25 +209,32 @@ public:
 	// Sets which mode to use for software render threads (low, medium, high, etc.).
 	void setRenderThreadsMode(int mode);
 
-	// Helper methods for changing data in the 3D renderer. Some data, like the voxel
-	// grid, are passed each frame by reference.
-	// - Some 'add' methods take a unique ID and parameters to create a new object.
-	// - 'update' methods take optional parameters for updating, ignoring null ones.
-	// - 'remove' methods delete an object from renderer memory if it exists.
-	void addLight(int id, const Double3 &point, const Double3 &color, double intensity);
-	void updateLight(int id, const Double3 *point, const Double3 *color,
-		const double *intensity);
+	// Texture handle allocation functions.
+	// @todo: see RendererSystem3D -- these should take TextureBuilders instead and return optional handles.
+	bool tryCreateVoxelTexture(const TextureAssetReference &textureAssetRef, TextureManager &textureManager);
+	bool tryCreateEntityTexture(const TextureAssetReference &textureAssetRef, TextureManager &textureManager);
+	bool tryCreateSkyTexture(const TextureAssetReference &textureAssetRef, TextureManager &textureManager);
+	bool tryCreateUiTexture(const TextureAssetReference &textureAssetRef, TextureManager &textureManager);
+
+	// Texture handle freeing functions.
+	// @todo: see RendererSystem3D -- these should take texture IDs instead.
+	void freeVoxelTexture(const TextureAssetReference &textureAssetRef);
+	void freeEntityTexture(const TextureAssetReference &textureAssetRef);
+	void freeSkyTexture(const TextureAssetReference &textureAssetRef);
+	void freeUiTexture(const TextureAssetReference &textureAssetRef);
+
+	// Helper methods for changing data in the 3D renderer.
 	void setFogDistance(double fogDistance);
-	void setVoxelTexture(int id, const uint8_t *srcTexels, const Palette &palette);
-	void addFlatTexture(int flatIndex, EntityAnimationData::StateType stateType, int angleID,
-		bool flipped, const uint8_t *srcTexels, int width, int height, const Palette &palette);
-	void addChasmTexture(VoxelDefinition::ChasmData::Type chasmType, const uint8_t *colors,
+	EntityRenderID makeEntityRenderID();
+	void setFlatTextures(EntityRenderID entityRenderID, const EntityAnimationDefinition &animDef,
+		const EntityAnimationInstance &animInst, bool isPuddle, TextureManager &textureManager);
+	void addChasmTexture(ArenaTypes::ChasmType chasmType, const uint8_t *colors,
 		int width, int height, const Palette &palette);
-	void setDistantSky(const DistantSky &distantSky, const Palette &palette);
+	void setDistantSky(const DistantSky &distantSky, const Palette &palette,
+		TextureManager &textureManager);
 	void setSkyPalette(const uint32_t *colors, int count);
-	void setNightLightsActive(bool active);
-	void removeLight(int id);
-	void clearTextures();
+	void setNightLightsActive(bool active, const Palette &palette);
+	void clearTexturesAndEntityRenderIDs();
 	void clearDistantSky();
 
 	// Fills the native frame buffer with the draw color, or default black/transparent.
@@ -223,17 +254,15 @@ public:
 
 	// Runs the 3D renderer which draws the world onto the native frame buffer.
 	// If the renderer is uninitialized, this causes a crash.
-	void renderWorld(const Double3 &eye, const Double3 &forward, double fovY, double ambient,
-		double daytimePercent, double chasmAnimPercent, double latitude, bool parallaxSky,
-		bool nightLightsAreActive, bool isExterior, bool playerHasLight, int chunkDistance,
-		double ceilingHeight, const std::vector<LevelData::DoorState> &openDoors,
-		const std::vector<LevelData::FadeState> &fadingVoxels, const VoxelGrid &voxelGrid,
-		const EntityManager &entityManager);
+	void renderWorld(const CoordDouble3 &eye, const Double3 &forward, double fovY, double ambient, double daytimePercent,
+		double chasmAnimPercent, double latitude, bool nightLightsAreActive, bool isExterior, bool playerHasLight,
+		int chunkDistance, double ceilingHeight, const LevelData &levelData,
+		const EntityDefinitionLibrary &entityDefLibrary, const Palette &palette);
 
 	// Draws the given cursor texture to the native frame buffer. The exact position 
 	// of the cursor is modified by the cursor alignment.
-	void drawCursor(const Texture &texture, CursorAlignment alignment, 
-		const Int2 &mousePosition, double scale);
+	void drawCursor(TextureBuilderID textureBuilderID, PaletteID paletteID, CursorAlignment alignment,
+		const Int2 &mousePosition, double scale, const TextureManager &textureManager);
 
 	// Draw methods for the native and original frame buffers.
 	void draw(const Texture &texture, int x, int y, int w, int h);
@@ -244,8 +273,18 @@ public:
 	void drawOriginal(const Texture &texture, int x, int y, int w, int h);
 	void drawOriginal(const Texture &texture, int x, int y);
 	void drawOriginal(const Texture &texture);
+	// @todo: using temp compatibility function until renderer allows allocating of texture handles for users.
+	void drawOriginal(TextureBuilderID textureBuilderID, PaletteID paletteID, int x, int y, int w, int h,
+		const TextureManager& textureManager);
+	void drawOriginal(TextureBuilderID textureBuilderID, PaletteID paletteID, int x, int y,
+		const TextureManager &textureManager);
+	void drawOriginal(TextureBuilderID textureBuilderID, PaletteID paletteID, const TextureManager &textureManager);
 	void drawOriginalClipped(const Texture &texture, const Rect &srcRect, const Rect &dstRect);
 	void drawOriginalClipped(const Texture &texture, const Rect &srcRect, int x, int y);
+	void drawOriginalClipped(TextureBuilderID textureBuilderID, PaletteID paletteID, const Rect &srcRect,
+		const Rect &dstRect, const TextureManager &textureManager);
+	void drawOriginalClipped(TextureBuilderID textureBuilderID, PaletteID paletteID, const Rect &srcRect,
+		int x, int y, const TextureManager &textureManager);
 
 	// Stretches a texture over the entire native frame buffer.
 	void fill(const Texture &texture);

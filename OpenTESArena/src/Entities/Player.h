@@ -2,31 +2,31 @@
 #define PLAYER_H
 
 #include "Camera3D.h"
-#include "CharacterClass.h"
 #include "WeaponAnimation.h"
+#include "../Assets/MIFUtils.h"
 
+class CharacterClassLibrary;
 class ExeData;
 class Game;
+class Random;
 class WorldData;
-
-enum class GenderName;
 
 class Player
 {
 private:
-	static const double STEPPING_HEIGHT; // Allowed change in height for stepping on stairs.
-	static const double JUMP_VELOCITY; // Instantaneous change in Y velocity when jumping.
+	static constexpr double STEPPING_HEIGHT = 0.25; // Allowed change in height for stepping on stairs.
+	static constexpr double JUMP_VELOCITY = 3.0; // Instantaneous change in Y velocity when jumping.
 	
 	// Magnitude of -Y acceleration in the air.
-	static const double GRAVITY;
+	static constexpr double GRAVITY = 9.81;
 
 	// Friction for slowing the player down on ground.
-	static const double FRICTION;
+	static constexpr double FRICTION = 4.0;
 
 	std::string displayName;
-	GenderName gender;
+	bool male;
 	int raceID;
-	CharacterClass charClass;
+	int charClassDefID;
 	int portraitID;
 	Camera3D camera;
 	Double3 velocity;
@@ -43,29 +43,28 @@ private:
 	// Updates the player's position and velocity based on interactions with the world.
 	void updatePhysics(const WorldData &worldData, bool collision, double dt);
 public:
-	Player(const std::string &displayName, GenderName gender, int raceID,
-		const CharacterClass &charClass, int portraitID, const Double3 &position,
-		const Double3 &direction, const Double3 &velocity, double maxWalkSpeed,
-		double maxRunSpeed, int weaponID, const ExeData &exeData);
+	Player(const std::string &displayName, bool male, int raceID, int charClassDefID,
+		int portraitID, const CoordDouble3 &position, const Double3 &direction, const Double3 &velocity,
+		double maxWalkSpeed, double maxRunSpeed, int weaponID, const ExeData &exeData);
 
 	// Distance from player's feet to head.
-	static const double HEIGHT;
+	static constexpr double HEIGHT = 60.0 / MIFUtils::ARENA_UNITS;
 
 	// Arbitrary values for movement speed.
-	static const double DEFAULT_WALK_SPEED;
-	static const double DEFAULT_RUN_SPEED;
+	static constexpr double DEFAULT_WALK_SPEED = 2.0;
+	static constexpr double DEFAULT_RUN_SPEED = 8.0;
 
-	const Double3 &getPosition() const;
+	const CoordDouble3 &getPosition() const;
 	const std::string &getDisplayName() const;
 	std::string getFirstName() const;
 	int getPortraitID() const;
-	GenderName getGenderName() const;
+	bool isMale() const;
 	int getRaceID() const;
-	const CharacterClass &getCharacterClass() const;
+	int getCharacterClassDefID() const;
 
 	// Generates a random player for testing.
-	static Player makeRandom(const std::vector<CharacterClass> &charClasses,
-		const ExeData &exeData);
+	static Player makeRandom(const CharacterClassLibrary &charClassLibrary,
+		const ExeData &exeData, Random &random);
 
 	// Gets the direction the player is facing.
 	const Double3 &getDirection() const;
@@ -79,26 +78,27 @@ public:
 	// Gets the strength of the player's jump (i.e., instantaneous change in Y velocity).
 	double getJumpMagnitude() const;
 
-	// Gets the voxel coordinates of the player.
-	Int3 getVoxelPosition() const;
-
 	// Gets the player's weapon animation for displaying on-screen.
 	WeaponAnimation &getWeaponAnimation();
+	const WeaponAnimation &getWeaponAnimation() const;
 
 	// Returns whether the player is standing on ground and with no Y velocity.
 	bool onGround(const WorldData &worldData) const;
 
 	// Teleports the player to a point.
-	void teleport(const Double3 &position);
+	void teleport(const CoordDouble3 &position);
 
 	// Rotates the player's camera based on some change in X (left/right) and Y (up/down).
 	void rotate(double dx, double dy, double hSensitivity, double vSensitivity, double pitchLimit);
 
 	// Recalculates the player's view so they look at a point.
-	void lookAt(const Double3 &point);
+	void lookAt(const CoordDouble3 &point);
 
 	// Sets velocity vector to zero. Intended for stopping the player after level transitions.
 	void setVelocityToZero();
+
+	// Flattens direction vector to the horizon (used when switching classic/modern camera mode).
+	void setDirectionToHorizon();
 
 	// Changes the velocity (as a force) given a normalized direction, magnitude, 
 	// and delta time, as well as whether the player is running.

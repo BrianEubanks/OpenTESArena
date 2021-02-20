@@ -1,14 +1,10 @@
 #include "SDL.h"
 
 #include "ImagePanel.h"
+#include "Texture.h"
 #include "../Game/Game.h"
-#include "../Media/PaletteFile.h"
-#include "../Media/PaletteName.h"
-#include "../Media/TextureFile.h"
 #include "../Media/TextureManager.h"
-#include "../Media/TextureName.h"
 #include "../Rendering/Renderer.h"
-#include "../Rendering/Texture.h"
 
 ImagePanel::ImagePanel(Game &game, const std::string &paletteName, 
 	const std::string &textureName, double secondsToDisplay,
@@ -55,10 +51,22 @@ void ImagePanel::render(Renderer &renderer)
 	// Clear full screen.
 	renderer.clear();
 
-	auto &textureManager = this->getGame().getTextureManager();
-
 	// Draw image.
-	const auto &image = textureManager.getTexture(
-		this->textureName, this->paletteName, renderer);
-	renderer.drawOriginal(image);
+	auto &textureManager = this->getGame().getTextureManager();
+	const std::optional<PaletteID> paletteID = textureManager.tryGetPaletteID(this->paletteName.c_str());
+	if (!paletteID.has_value())
+	{
+		DebugLogError("Couldn't get palette ID for \"" + this->paletteName + "\".");
+		return;
+	}
+
+	const std::optional<TextureBuilderID> textureBuilderID =
+		textureManager.tryGetTextureBuilderID(this->textureName.c_str());
+	if (!textureBuilderID.has_value())
+	{
+		DebugLogError("Couldn't get texture builder ID for \"" + this->textureName + "\".");
+		return;
+	}
+	
+	renderer.drawOriginal(*textureBuilderID, *paletteID, textureManager);
 }

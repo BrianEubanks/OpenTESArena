@@ -1,5 +1,6 @@
 #include <algorithm>
 #include <limits>
+#include <optional>
 
 #include "SDL.h"
 
@@ -9,6 +10,7 @@
 #include "RichTextString.h"
 #include "TextAlignment.h"
 #include "TextBox.h"
+#include "Texture.h"
 #include "../Entities/Player.h"
 #include "../Game/Game.h"
 #include "../Game/GameData.h"
@@ -16,21 +18,19 @@
 #include "../Game/PlayerInterface.h"
 #include "../Media/AudioManager.h"
 #include "../Media/Color.h"
-#include "../Media/FontManager.h"
+#include "../Media/FontLibrary.h"
 #include "../Media/FontName.h"
-#include "../Media/PaletteFile.h"
-#include "../Media/PaletteName.h"
-#include "../Media/TextureFile.h"
 #include "../Media/TextureManager.h"
-#include "../Media/TextureName.h"
+#include "../Rendering/ArenaRenderUtils.h"
 #include "../Rendering/Renderer.h"
-#include "../Rendering/Texture.h"
 
 #include "components/debug/Debug.h"
 #include "components/utilities/String.h"
 
 namespace
 {
+	const Color BackgroundColor(60, 60, 68);
+
 	// Screen locations for various options things.
 	const Int2 TabsOrigin(3, 38);
 	const Int2 TabsDimensions(54, 16);
@@ -224,7 +224,6 @@ const std::string OptionsPanel::FPS_LIMIT_NAME = "FPS Limit";
 const std::string OptionsPanel::WINDOW_MODE_NAME = "Window Mode";
 const std::string OptionsPanel::LETTERBOX_MODE_NAME = "Letterbox Mode";
 const std::string OptionsPanel::MODERN_INTERFACE_NAME = "Modern Interface";
-const std::string OptionsPanel::PARALLAX_SKY_NAME = "Parallax Sky";
 const std::string OptionsPanel::RENDER_THREADS_MODE_NAME = "Render Threads Mode";
 const std::string OptionsPanel::RESOLUTION_SCALE_NAME = "Resolution Scale";
 const std::string OptionsPanel::VERTICAL_FOV_NAME = "Vertical FOV";
@@ -259,44 +258,46 @@ OptionsPanel::OptionsPanel(Game &game)
 	{
 		const Int2 center(160, 24);
 
+		const auto &fontLibrary = game.getFontLibrary();
 		const RichTextString richText(
 			"Options",
 			FontName::A,
 			Color::White,
 			TextAlignment::Center,
-			game.getFontManager());
+			fontLibrary);
 
-		return std::make_unique<TextBox>(center, richText, game.getRenderer());
+		return std::make_unique<TextBox>(center, richText, fontLibrary, game.getRenderer());
 	}();
 
 	this->backToPauseMenuTextBox = [&game]()
 	{
 		const Int2 center(
-			Renderer::ORIGINAL_WIDTH - 30,
-			Renderer::ORIGINAL_HEIGHT - 15);
+			ArenaRenderUtils::SCREEN_WIDTH - 30,
+			ArenaRenderUtils::SCREEN_HEIGHT - 15);
 
+		const auto &fontLibrary = game.getFontLibrary();
 		const RichTextString richText(
 			"Return",
 			FontName::Arena,
 			Color::White,
 			TextAlignment::Center,
-			game.getFontManager());
+			fontLibrary);
 
-		return std::make_unique<TextBox>(center, richText, game.getRenderer());
+		return std::make_unique<TextBox>(center, richText, fontLibrary, game.getRenderer());
 	}();
 
 	// Lambda for creating tab text boxes.
 	auto makeTabTextBox = [&game](const Int2 &center, const std::string &text)
 	{
+		const auto &fontLibrary = game.getFontLibrary();
 		const RichTextString richText(
 			text,
 			FontName::Arena,
 			Color::White,
 			TextAlignment::Center,
-			game.getFontManager());
+			fontLibrary);
 
-		return std::make_unique<TextBox>(
-			center, richText, game.getRenderer());
+		return std::make_unique<TextBox>(center, richText, fontLibrary, game.getRenderer());
 	};
 
 	const Int2 initialTabCenter(
@@ -320,8 +321,8 @@ OptionsPanel::OptionsPanel(Game &game)
 	this->backToPauseMenuButton = [this]()
 	{
 		const Int2 center(
-			Renderer::ORIGINAL_WIDTH - 30,
-			Renderer::ORIGINAL_HEIGHT - 15);
+			ArenaRenderUtils::SCREEN_WIDTH - 30,
+			ArenaRenderUtils::SCREEN_HEIGHT - 15);
 
 		auto function = [](Game &game)
 		{
@@ -433,17 +434,6 @@ OptionsPanel::OptionsPanel(Game &game)
 		options.setGraphics_VerticalFOV(value);
 	}));
 
-	this->graphicsOptions.push_back(std::make_unique<BoolOption>(
-		OptionsPanel::PARALLAX_SKY_NAME,
-		"Determines how distant sky objects (mountains, clouds, etc.) are\ndrawn. Set to false for classic behavior.\n\n(Parallax is not fully implemented yet)",
-		options.getGraphics_ParallaxSky(),
-		[this](bool value)
-	{
-		auto &game = this->getGame();
-		auto &options = game.getOptions();
-		options.setGraphics_ParallaxSky(value);
-	}));
-
 	auto letterboxModeOption = std::make_unique<IntOption>(
 		OptionsPanel::LETTERBOX_MODE_NAME,
 		"Determines the aspect ratio of the game UI. The weapon animation\nin modern mode is unaffected by this.",
@@ -493,10 +483,7 @@ OptionsPanel::OptionsPanel(Game &game)
 		if (!isModernMode)
 		{
 			auto &player = game.getGameData().getPlayer();
-			const Double2 groundDirection = player.getGroundDirection();
-			const Double3 lookAtPoint = player.getPosition() +
-				Double3(groundDirection.x, 0.0, groundDirection.y);
-			player.lookAt(lookAtPoint);
+			player.setDirectionToHorizon();
 		}
 
 		// Resize the game world rendering.
@@ -625,10 +612,7 @@ OptionsPanel::OptionsPanel(Game &game)
 
 		// Reset player view to forward.
 		auto &player = game.getGameData().getPlayer();
-		const Double2 groundDirection = player.getGroundDirection();
-		const Double3 lookAtPoint = player.getPosition() +
-			Double3(groundDirection.x, 0.0, groundDirection.y);
-		player.lookAt(lookAtPoint);
+		player.setDirectionToHorizon();
 	}));
 
 	this->inputOptions.push_back(std::make_unique<BoolOption>(
@@ -788,17 +772,19 @@ void OptionsPanel::updateOptionTextBox(int index)
 	auto &game = this->getGame();
 	const auto &visibleOption = this->getVisibleOptions().at(index);
 
+	const auto &fontLibrary = game.getFontLibrary();
 	const RichTextString richText(
 		visibleOption->getName() + ": " + visibleOption->getDisplayedValue(),
 		FontName::Arena,
 		Color::White,
 		TextAlignment::Left,
-		game.getFontManager());
+		fontLibrary);
 
 	this->currentTabTextBoxes.at(index) = std::make_unique<TextBox>(
 		ListOrigin.x,
 		ListOrigin.y + (richText.getDimensions().y * index),
 		richText,
+		fontLibrary,
 		game.getRenderer());
 }
 
@@ -809,43 +795,124 @@ void OptionsPanel::updateVisibleOptionTextBoxes()
 
 	this->currentTabTextBoxes.clear();
 	this->currentTabTextBoxes.resize(visibleOptions.size());
-	
+
 	for (int i = 0; i < static_cast<int>(visibleOptions.size()); i++)
 	{
 		this->updateOptionTextBox(i);
 	}
 }
 
+void OptionsPanel::drawReturnButtonsAndTabs(Renderer &renderer)
+{
+	auto &textureManager = this->getGame().getTextureManager();
+	Texture tabBackground = TextureUtils::generate(TextureUtils::PatternType::Custom1,
+		GraphicsTabRect.getWidth(), GraphicsTabRect.getHeight(), textureManager, renderer);
+
+	for (int i = 0; i < 5; i++)
+	{
+		const int tabX = GraphicsTabRect.getLeft();
+		const int tabY = GraphicsTabRect.getTop() + (tabBackground.getHeight() * i);
+		renderer.drawOriginal(tabBackground, tabX, tabY);
+	}
+
+	Texture returnBackground = TextureUtils::generate(TextureUtils::PatternType::Custom1,
+		this->backToPauseMenuButton.getWidth(), this->backToPauseMenuButton.getHeight(),
+		textureManager, renderer);
+	renderer.drawOriginal(returnBackground, this->backToPauseMenuButton.getX(),
+		this->backToPauseMenuButton.getY());
+}
+
+void OptionsPanel::drawText(Renderer &renderer)
+{
+	renderer.drawOriginal(this->titleTextBox->getTexture(),
+		this->titleTextBox->getX(), this->titleTextBox->getY());
+	renderer.drawOriginal(this->backToPauseMenuTextBox->getTexture(),
+		this->backToPauseMenuTextBox->getX(), this->backToPauseMenuTextBox->getY());
+
+	// Tabs.
+	renderer.drawOriginal(this->graphicsTextBox->getTexture(),
+		this->graphicsTextBox->getX(), this->graphicsTextBox->getY());
+	renderer.drawOriginal(this->audioTextBox->getTexture(),
+		this->audioTextBox->getX(), this->audioTextBox->getY());
+	renderer.drawOriginal(this->inputTextBox->getTexture(),
+		this->inputTextBox->getX(), this->inputTextBox->getY());
+	renderer.drawOriginal(this->miscTextBox->getTexture(),
+		this->miscTextBox->getX(), this->miscTextBox->getY());
+	renderer.drawOriginal(this->devTextBox->getTexture(),
+		this->devTextBox->getX(), this->devTextBox->getY());
+}
+
+void OptionsPanel::drawTextOfOptions(Renderer &renderer)
+{
+	const auto &visibleOptions = this->getVisibleOptions();
+	std::optional<int> highlightedOptionIndex;
+	for (int i = 0; i < static_cast<int>(visibleOptions.size()); i++)
+	{
+		const auto &optionTextBox = this->currentTabTextBoxes.at(i);
+		const int optionTextBoxHeight = optionTextBox->getRect().getHeight();
+		const Rect optionRect(
+			ListOrigin.x,
+			ListOrigin.y + (optionTextBoxHeight * i),
+			ListDimensions.x,
+			optionTextBoxHeight);
+
+		const auto &inputManager = this->getGame().getInputManager();
+		const Int2 mousePosition = inputManager.getMousePosition();
+		const Int2 originalPosition = renderer.nativeToOriginal(mousePosition);
+		const bool optionRectContainsMouse = optionRect.contains(originalPosition);
+
+		// If the options rect contains the mouse cursor, highlight it before drawing text.
+		if (optionRectContainsMouse)
+		{
+			const Color highlightColor = BackgroundColor + Color(20, 20, 20);
+			renderer.fillOriginalRect(highlightColor,
+				optionRect.getLeft(), optionRect.getTop(),
+				optionRect.getWidth(), optionRect.getHeight());
+
+			// Store the highlighted option index for tooltip drawing.
+			highlightedOptionIndex = i;
+		}
+
+		// Draw option text.
+		renderer.drawOriginal(optionTextBox->getTexture(),
+			optionTextBox->getX(), optionTextBox->getY());
+
+		// Draw description if hovering over an option with a non-empty tooltip.
+		if (highlightedOptionIndex.has_value())
+		{
+			const auto &visibleOption = visibleOptions.at(*highlightedOptionIndex);
+			const std::string &tooltip = visibleOption->getTooltip();
+
+			// Only draw if the tooltip has text.
+			if (!tooltip.empty())
+			{
+				this->drawDescription(tooltip, renderer);
+			}
+		}
+	}
+}
+
 void OptionsPanel::drawDescription(const std::string &text, Renderer &renderer)
 {
 	auto &game = this->getGame();
-
+	const auto &fontLibrary = game.getFontLibrary();
 	const RichTextString richText(
 		text,
 		FontName::Arena,
 		Color::White,
 		TextAlignment::Left,
-		game.getFontManager());
+		fontLibrary);
 
 	auto descriptionTextBox = std::make_unique<TextBox>(
-		DescriptionOrigin.x,
-		DescriptionOrigin.y,
-		richText,
-		game.getRenderer());
+		DescriptionOrigin.x, DescriptionOrigin.y, richText, fontLibrary, game.getRenderer());
 
 	renderer.drawOriginal(descriptionTextBox->getTexture(),
 		descriptionTextBox->getX(), descriptionTextBox->getY());
 }
 
-Panel::CursorData OptionsPanel::getCurrentCursor() const
+std::optional<Panel::CursorData> OptionsPanel::getCurrentCursor() const
 {
-	auto &game = this->getGame();
-	auto &renderer = game.getRenderer();
-	auto &textureManager = game.getTextureManager();
-	const auto &texture = textureManager.getTexture(
-		TextureFile::fromName(TextureName::SwordCursor),
-		PaletteFile::fromName(PaletteName::Default), renderer);
-	return CursorData(&texture, CursorAlignment::TopLeft);
+	return this->getDefaultCursor();
 }
 
 void OptionsPanel::handleEvent(const SDL_Event &e)
@@ -997,92 +1064,11 @@ void OptionsPanel::render(Renderer &renderer)
 	// Clear full screen.
 	renderer.clear();
 
-	// Set palette.
-	auto &textureManager = this->getGame().getTextureManager();
-	textureManager.setPalette(PaletteFile::fromName(PaletteName::Default));
-
 	// Draw solid background.
-	const Color backgroundColor(60, 60, 68);
-	renderer.clearOriginal(backgroundColor);
+	renderer.clearOriginal(BackgroundColor);
 
-	// Draw return button and tabs.
-	Texture tabBackground = Texture::generate(Texture::PatternType::Custom1,
-		GraphicsTabRect.getWidth(), GraphicsTabRect.getHeight(), textureManager, renderer);
-	for (int i = 0; i < 5; i++)
-	{
-		renderer.drawOriginal(tabBackground,
-			GraphicsTabRect.getLeft(),
-			GraphicsTabRect.getTop() + (tabBackground.getHeight() * i));
-	}
-
-	Texture returnBackground = Texture::generate(Texture::PatternType::Custom1,
-		this->backToPauseMenuButton.getWidth(), this->backToPauseMenuButton.getHeight(),
-		textureManager, renderer);
-	renderer.drawOriginal(returnBackground, this->backToPauseMenuButton.getX(),
-		this->backToPauseMenuButton.getY());
-
-	// Draw text.
-	renderer.drawOriginal(this->titleTextBox->getTexture(),
-		this->titleTextBox->getX(), this->titleTextBox->getY());
-	renderer.drawOriginal(this->backToPauseMenuTextBox->getTexture(),
-		this->backToPauseMenuTextBox->getX(), this->backToPauseMenuTextBox->getY());
-	renderer.drawOriginal(this->graphicsTextBox->getTexture(),
-		this->graphicsTextBox->getX(), this->graphicsTextBox->getY());
-	renderer.drawOriginal(this->audioTextBox->getTexture(),
-		this->audioTextBox->getX(), this->audioTextBox->getY());
-	renderer.drawOriginal(this->inputTextBox->getTexture(),
-		this->inputTextBox->getX(), this->inputTextBox->getY());
-	renderer.drawOriginal(this->miscTextBox->getTexture(),
-		this->miscTextBox->getX(), this->miscTextBox->getY());
-	renderer.drawOriginal(this->devTextBox->getTexture(),
-		this->devTextBox->getX(), this->devTextBox->getY());
-
-	const auto &inputManager = this->getGame().getInputManager();
-	const Int2 mousePosition = inputManager.getMousePosition();
-	const Int2 originalPosition = renderer.nativeToOriginal(mousePosition);
-
-	// Draw each option's text.
-	const auto &visibleOptions = this->getVisibleOptions();
-	int highlightedOptionIndex = -1;
-	for (int i = 0; i < static_cast<int>(visibleOptions.size()); i++)
-	{
-		const auto &optionTextBox = this->currentTabTextBoxes.at(i);
-		const int optionTextBoxHeight = optionTextBox->getRect().getHeight();
-		const Rect optionRect(
-			ListOrigin.x,
-			ListOrigin.y + (optionTextBoxHeight * i),
-			ListDimensions.x,
-			optionTextBoxHeight);
-
-		const bool optionRectContainsMouse = optionRect.contains(originalPosition);
-
-		// If the options rect contains the mouse cursor, highlight it before drawing text.
-		if (optionRectContainsMouse)
-		{
-			const Color highlightColor = backgroundColor + Color(20, 20, 20);
-			renderer.fillOriginalRect(highlightColor,
-				optionRect.getLeft(), optionRect.getTop(),
-				optionRect.getWidth(), optionRect.getHeight());
-
-			// Store the highlighted option index for tooltip drawing.
-			highlightedOptionIndex = i;
-		}
-
-		// Draw option text.
-		renderer.drawOriginal(optionTextBox->getTexture(),
-			optionTextBox->getX(), optionTextBox->getY());
-	}
-
-	// Draw description if hovering over an option with a non-empty tooltip.
-	if (highlightedOptionIndex != -1)
-	{
-		const auto &visibleOption = visibleOptions.at(highlightedOptionIndex);
-		const std::string &tooltip = visibleOption->getTooltip();
-
-		// Only draw if the tooltip has text.
-		if (!tooltip.empty())
-		{
-			this->drawDescription(tooltip, renderer);
-		}
-	}
+	// Draw elements.
+	this->drawReturnButtonsAndTabs(renderer);
+	this->drawText(renderer);
+	this->drawTextOfOptions(renderer);
 }

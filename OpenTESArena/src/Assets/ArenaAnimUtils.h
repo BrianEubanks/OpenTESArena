@@ -8,17 +8,22 @@
 #include <unordered_map>
 #include <vector>
 
-#include "../Entities/EntityAnimationData.h"
+#include "ArenaTypes.h"
+#include "INFFile.h"
+#include "../Entities/EntityAnimationDefinition.h"
+#include "../Entities/EntityAnimationInstance.h"
 #include "../Media/Palette.h"
 
 class ArenaRandom;
+class BinaryAssetLibrary;
 class CFAFile;
+class CharacterClassLibrary;
 class ExeData;
-class INFFile;
-class MiscAssets;
+class TextureManager;
 
 enum class ClimateType;
 enum class EntityType;
+enum class MapType;
 
 // Helper values for working with the original animations. These may or may not be directly
 // referencing original values and may only exist for convenience in the new engine.
@@ -32,19 +37,11 @@ namespace ArenaAnimUtils
 	// with a creature .CFA file.
 	constexpr int FirstFlippedAnimID = 6;
 
-	// Various special case conditions for generating static animations.
-	enum class StaticAnimCondition
-	{
-		None,
-		IsCity,
-		IsPalace
-	};
-
 	// Animation values for static .DFA files.
 	constexpr double StaticIdleSecondsPerFrame = 1.0 / 12.0;
 	constexpr double StaticActivatedSecondsPerFrame = StaticIdleSecondsPerFrame;
-	const bool StaticIdleLoop = true;
-	const bool StaticActivatedLoop = StaticIdleLoop;
+	constexpr bool StaticIdleLoop = true;
+	constexpr bool StaticActivatedLoop = StaticIdleLoop;
 
 	// Animation values for creatures with .CFA files.
 	constexpr double CreatureIdleSecondsPerFrame = 1.0 / 12.0;
@@ -53,11 +50,11 @@ namespace ArenaAnimUtils
 	constexpr double CreatureAttackSecondsPerFrame = 1.0 / 12.0;
 	constexpr double CreatureDeathSecondsPerFrame = 1.0 / 12.0;
 	constexpr int CreatureAttackFrameIndex = 10;
-	const bool CreatureIdleLoop = true;
-	const bool CreatureLookLoop = false;
-	const bool CreatureWalkLoop = true;
-	const bool CreatureAttackLoop = false;
-	const bool CreatureDeathLoop = false;
+	constexpr bool CreatureIdleLoop = true;
+	constexpr bool CreatureLookLoop = false;
+	constexpr bool CreatureWalkLoop = true;
+	constexpr bool CreatureAttackLoop = false;
+	constexpr bool CreatureDeathLoop = false;
 	const std::vector<int> CreatureIdleIndices = { 0 };
 	const std::vector<int> CreatureLookIndices = { 6, 0, 7, 0 };
 	const std::vector<int> CreatureWalkIndices = { 0, 1, 2, 3, 4, 5 };
@@ -68,95 +65,73 @@ namespace ArenaAnimUtils
 	constexpr double HumanWalkSecondsPerFrame = CreatureWalkSecondsPerFrame;
 	constexpr double HumanAttackSecondsPerFrame = CreatureAttackSecondsPerFrame;
 	constexpr double HumanDeathSecondsPerFrame = CreatureDeathSecondsPerFrame;
-	const bool HumanIdleLoop = CreatureIdleLoop;
-	const bool HumanWalkLoop = CreatureWalkLoop;
-	const bool HumanAttackLoop = CreatureAttackLoop;
-	const bool HumanDeathLoop = CreatureDeathLoop;
+	constexpr bool HumanIdleLoop = CreatureIdleLoop;
+	constexpr bool HumanWalkLoop = CreatureWalkLoop;
+	constexpr bool HumanAttackLoop = CreatureAttackLoop;
+	constexpr bool HumanDeathLoop = CreatureDeathLoop;
 	const std::vector<int> HumanIdleIndices = CreatureIdleIndices;
 	const std::vector<int> HumanWalkIndices = CreatureWalkIndices;
 
 	// Animation values for citizens with .CFA files.
 	constexpr double CitizenIdleSecondsPerFrame = 1.0 / 4.0;
-	constexpr double CitizenWalkSecondsPerFrame = HumanWalkSecondsPerFrame;
+	constexpr double CitizenWalkSecondsPerFrame = 1.0 / 16.0;
 	const bool CitizenIdleLoop = HumanIdleLoop;
 	const bool CitizenWalkLoop = HumanWalkLoop;
 	const std::vector<int> CitizenIdleIndices = { 6, 7, 8 };
 	const std::vector<int> CitizenWalkIndices = HumanWalkIndices;
 
-	// Cache for .CFA/.DFA/.IMG files referenced multiple times during entity loading.
-	template <typename T>
-	class AnimFileCache
-	{
-	private:
-		std::unordered_map<std::string, T> files;
-	public:
-		bool tryGet(const std::string &filename, const T **outFile)
-		{
-			auto iter = this->files.find(filename);
-			if (iter == this->files.end())
-			{
-				T file;
-				if (!file.init(filename.c_str()))
-				{
-					DebugLogError("Couldn't init cached anim file \"" + filename + "\".");
-					return false;
-				}
-
-				iter = this->files.emplace(std::make_pair(filename, std::move(file))).first;
-			}
-
-			*outFile = &iter->second;
-			return true;
-		}
-	};
-
 	// The final boss is sort of a special case. Their *ITEM index is at the very end of 
 	// human enemies, but they are treated like a creature.
-	bool isFinalBossIndex(int itemIndex);
+	bool isFinalBossIndex(ArenaTypes::ItemIndex itemIndex);
 
 	// *ITEM 32 to 54 are creatures (rat, goblin, etc.). The final boss is a special case.
-	bool isCreatureIndex(int itemIndex, bool *outIsFinalBoss);
+	bool isCreatureIndex(ArenaTypes::ItemIndex itemIndex, bool *outIsFinalBoss);
 
 	// *ITEM 55 to 72 are human enemies (guard, wizard, etc.).
-	bool isHumanEnemyIndex(int itemIndex);
+	bool isHumanEnemyIndex(ArenaTypes::ItemIndex itemIndex);
 
 	// Returns whether the given flat index is for a static or dynamic entity.
-	EntityType getEntityTypeFromFlat(int flatIndex, const INFFile &inf);
+	EntityType getEntityTypeFromFlat(ArenaTypes::FlatIndex flatIndex, const INFFile &inf);
+
+	// Gets the first creature's *ITEM index (rat).
+	ArenaTypes::ItemIndex getFirstCreatureItemIndex();
 
 	// Creature IDs are 1-based (rat=1, goblin=2, etc.).
-	int getCreatureIDFromItemIndex(int itemIndex);
+	int getCreatureIDFromItemIndex(ArenaTypes::ItemIndex itemIndex);
 
 	// The final boss is a special case, essentially hardcoded at the end of the creatures.
 	int getFinalBossCreatureID();
 
+	// Converts the 1-based creature ID to an index usable with .exe data arrays.
+	int getCreatureIndexFromID(int creatureID);
+
 	// Character classes (mage, warrior, etc.) used by human enemies.
-	int getCharacterClassIndexFromItemIndex(int itemIndex);
+	int getCharacterClassIndexFromItemIndex(ArenaTypes::ItemIndex itemIndex);
 
 	// Streetlights are hardcoded in the original game to flat index 29. This lets the
 	// game give them a light source and toggle them between on and off states.
-	int getStreetLightActiveIndex();
-	int getStreetLightInactiveIndex();
-	bool isStreetLightFlatIndex(int flatIndex, bool isCity);
+	ArenaTypes::FlatIndex getStreetLightActiveIndex();
+	ArenaTypes::FlatIndex getStreetLightInactiveIndex();
+	bool isStreetLightFlatIndex(ArenaTypes::FlatIndex flatIndex, MapType mapType);
 
 	// Ruler flats are either a king or queen.
-	int getRulerKingIndex();
-	int getRulerQueenIndex();
-	bool isRulerFlatIndex(int flatIndex, bool isPalace);
+	ArenaTypes::FlatIndex getRulerKingIndex();
+	ArenaTypes::FlatIndex getRulerQueenIndex();
+	bool isRulerFlatIndex(ArenaTypes::FlatIndex flatIndex, ArenaTypes::InteriorType interiorType);
 
 	// Original sprite scaling function. Takes sprite texture dimensions and scaling
 	// value and outputs dimensions for the final displayed entity.
 	void getBaseFlatDimensions(int width, int height, uint16_t scale, int *baseWidth, int *baseHeight);
+
+	// Scaler for world-space dimensions depending on special .INF-related modifiers.
+	double getDimensionModifier(const INFFile::FlatData &flatData);
 
 	// Returns whether the given original animation state ID would be for a flipped animation.
 	// Animation state IDs are 1-based, 1 being the entity looking at the player.
 	bool isAnimDirectionFlipped(int animDirectionID);
 
 	// Given a creature direction anim ID like 7, will return the index of the non-flipped anim.
-	int getDynamicEntityCorrectedAnimID(int animDirectionID, bool *outIsFlipped);
-
-	// Helper function for generating a default entity animation state for later modification.
-	EntityAnimationData::State makeAnimState(EntityAnimationData::StateType stateType,
-		double secondsPerFrame, bool loop, bool flipped = false);
+	int getDynamicEntityCorrectedAnimDirID(int animDirectionID, bool *outIsFlipped);
 
 	// Works for both creature and human enemy filenames.
 	bool trySetDynamicEntityFilenameDirection(std::string &filename, int animDirectionID);
@@ -165,8 +140,8 @@ namespace ArenaAnimUtils
 	bool trySetCitizenFilenameDirection(std::string &filename, int animDirectionID);
 
 	// Writes out values for human enemy animations.
-	void getHumanEnemyProperties(int itemIndex, const MiscAssets &miscAssets,
-		int *outTypeIndex, bool *outIsMale);
+	void getHumanEnemyProperties(int charClassIndex, const CharacterClassLibrary &charClassLibrary,
+		const ExeData &exeData, int *outTypeIndex);
 
 	// Writes the gender data into the given filename if possible.
 	bool trySetHumanFilenameGender(std::string &filename, bool isMale);
@@ -174,33 +149,34 @@ namespace ArenaAnimUtils
 	// Writes the human type data into the given filename if possible.
 	bool trySetHumanFilenameType(std::string &filename, const std::string_view &type);
 
-	// Static entity animation state functions.
-	void makeStaticEntityAnimStates(int flatIndex, StaticAnimCondition condition,
-		const std::optional<bool> &rulerIsMale, const INFFile &inf, const ExeData &exeData,
-		std::vector<EntityAnimationData::State> *outIdleStates,
-		std::vector<EntityAnimationData::State> *outActivatedStates);
-	void makeRulerAnimStates(bool rulerIsMale, const INFFile &inf,
-		const ExeData &exeData, std::vector<EntityAnimationData::State> *outIdleStates);
-	void makeStreetlightAnimStates(const INFFile &inf, const ExeData &exeData,
-		std::vector<EntityAnimationData::State> *outIdleStates,
-		std::vector<EntityAnimationData::State> *outActivatedStates);
+	// Writes out static entity animation data to animation states.
+	bool tryMakeStaticEntityAnims(ArenaTypes::FlatIndex flatIndex, MapType mapType,
+		const std::optional<ArenaTypes::InteriorType> &interiorType, const std::optional<bool> &rulerIsMale,
+		const INFFile &inf, TextureManager &textureManager, EntityAnimationDefinition *outAnimDef,
+		EntityAnimationInstance *outAnimInst);
 
-	// Write out to lists of dynamic entity animation states for each animation direction.
-	// For any of the dynamic entity anim states, if the returned state list is empty,
-	// it is assumed that the entity has no information for that state.
-	void makeDynamicEntityAnimStates(int flatIndex, const INFFile &inf,
-		const MiscAssets &miscAssets, AnimFileCache<CFAFile> &cfaCache,
-		std::vector<EntityAnimationData::State> *outIdleStates,
-		std::vector<EntityAnimationData::State> *outLookStates,
-		std::vector<EntityAnimationData::State> *outWalkStates,
-		std::vector<EntityAnimationData::State> *outAttackStates,
-		std::vector<EntityAnimationData::State> *outDeathStates);
+	// Writes out creature animation data to animation states.
+	bool tryMakeDynamicEntityCreatureAnims(int creatureID, const ExeData &exeData,
+		TextureManager &textureManager, EntityAnimationDefinition *outAnimDef,
+		EntityAnimationInstance *outAnimInst);
 
-	// Write out to lists of citizen animation states for each animation direction.
-	void makeCitizenAnimStates(bool isMale, ClimateType climateType, const INFFile &inf,
-		const MiscAssets &miscAssets, AnimFileCache<CFAFile> &cfaCache,
-		std::vector<EntityAnimationData::State> *outIdleStates,
-		std::vector<EntityAnimationData::State> *outWalkStates);
+	// Writes out human enemy animation data to animation states.
+	bool tryMakeDynamicEntityHumanAnims(int charClassIndex, bool isMale,
+		const CharacterClassLibrary &charClassLibrary, const INFFile &inf,
+		const BinaryAssetLibrary &binaryAssetLibrary, TextureManager &textureManager,
+		EntityAnimationDefinition *outAnimDef, EntityAnimationInstance *outAnimInst);
+
+	// Writes out dynamic entity animation data to animation states. Use this when the dynamic
+	// entity type (creature, human, etc.) is unknown.
+	bool tryMakeDynamicEntityAnims(ArenaTypes::FlatIndex flatIndex, const std::optional<bool> &isMale,
+		const INFFile &inf, const CharacterClassLibrary &charClassLibrary,
+		const BinaryAssetLibrary &binaryAssetLibrary, TextureManager &textureManager,
+		EntityAnimationDefinition *outAnimDef, EntityAnimationInstance *outAnimInst);
+
+	// Writes out citizen animation data to animation states.
+	bool tryMakeCitizenAnims(ClimateType climateType, bool isMale, const ExeData &exeData,
+		TextureManager &textureManager, EntityAnimationDefinition *outAnimDef,
+		EntityAnimationInstance *outAnimInst);
 
 	// Transforms the palette used for a citizen's clothes and skin. The given seed value is
 	// "pure random" and can essentially be anything.

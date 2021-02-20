@@ -8,10 +8,19 @@
 #include <string>
 #include <vector>
 
-// This namespace offers various string operations and conversions.
+// Various string operations and conversions.
 
 namespace String
 {
+	static constexpr char SPACE = ' ';
+	static constexpr char CARRIAGE_RETURN = '\r';
+	static constexpr char NEWLINE = '\n';
+	static constexpr char TAB = '\t';
+	static constexpr char FILE_EXTENSION_SEPARATOR = '.';
+
+	// Returns whether the given C string is null or the empty string.
+	bool isNullOrEmpty(const char *str);
+
 	// Performs a case-insensitive ASCII string comparison.
 	bool caseInsensitiveEquals(const std::string &a, const std::string &b);
 
@@ -57,7 +66,7 @@ namespace String
 	template <size_t T>
 	bool splitExpected(const std::string &str, std::array<std::string, T> &dst)
 	{
-		return String::splitExpected(str, ' ', dst);
+		return String::splitExpected(str, String::SPACE, dst);
 	}
 
 	// Removes all whitespace from a string.
@@ -102,10 +111,10 @@ namespace String
 	template <typename T>
 	std::string toHexString(T value)
 	{
-		static_assert(std::is_integral<T>::value);
+		static_assert(std::is_integral_v<T>);
 
 		std::stringstream ss;
-		ss << std::hex << value;
+		ss << std::uppercase << std::hex << value;
 		return ss.str();
 	}
 
@@ -113,12 +122,16 @@ namespace String
 	template <typename T>
 	std::string fixedPrecision(T value, int precision)
 	{
-		static_assert(std::is_floating_point<T>::value);
+		static_assert(std::is_floating_point_v<T>);
 
 		std::stringstream ss;
 		ss << std::fixed << std::setprecision(precision) << value;
 		return ss.str();
 	}
+
+	// Attempts to copy the source string to the destination buffer. Returns whether
+	// the entire source string was copied.
+	bool tryCopy(const char *src, char *dst, size_t dstSize);
 }
 
 #endif

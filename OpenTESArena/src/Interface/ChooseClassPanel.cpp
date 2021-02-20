@@ -7,12 +7,12 @@
 #include "ChooseNamePanel.h"
 #include "CursorAlignment.h"
 #include "RichTextString.h"
+#include "Surface.h"
 #include "TextAlignment.h"
 #include "TextBox.h"
+#include "../Assets/ArenaTextureName.h"
 #include "../Assets/ExeData.h"
-#include "../Assets/MiscAssets.h"
-#include "../Entities/CharacterClassCategory.h"
-#include "../Entities/CharacterClassCategoryName.h"
+#include "../Entities/CharacterClassLibrary.h"
 #include "../Game/Game.h"
 #include "../Game/Options.h"
 #include "../Items/ArmorMaterial.h"
@@ -21,31 +21,29 @@
 #include "../Items/Weapon.h"
 #include "../Math/Vector2.h"
 #include "../Media/Color.h"
-#include "../Media/FontManager.h"
+#include "../Media/FontLibrary.h"
 #include "../Media/FontName.h"
-#include "../Media/PaletteFile.h"
-#include "../Media/PaletteName.h"
-#include "../Media/TextureFile.h"
 #include "../Media/TextureManager.h"
-#include "../Media/TextureName.h"
+#include "../Rendering/ArenaRenderUtils.h"
 #include "../Rendering/Renderer.h"
-#include "../Rendering/Surface.h"
 
 #include "components/debug/Debug.h"
-
-const int ChooseClassPanel::MAX_TOOLTIP_LINE_LENGTH = 14;
 
 ChooseClassPanel::ChooseClassPanel(Game &game)
 	: Panel(game)
 {
-	// Read in character classes (just copy from misc. assets for now).
-	const auto &classDefs = game.getMiscAssets().getClassDefinitions();
-	this->charClasses = std::vector<CharacterClass>(classDefs.begin(), classDefs.end());
+	// Read in character classes.
+	const auto &charClassLibrary = game.getCharacterClassLibrary();
+	this->charClasses = std::vector<CharacterClassDefinition>(charClassLibrary.getDefinitionCount());
 	DebugAssert(this->charClasses.size() > 0);
+	for (int i = 0; i < static_cast<int>(this->charClasses.size()); i++)
+	{
+		this->charClasses[i] = charClassLibrary.getDefinition(i);
+	}
 
 	// Sort character classes alphabetically for use with the list box.
 	std::sort(this->charClasses.begin(), this->charClasses.end(),
-		[](const CharacterClass &a, const CharacterClass &b)
+		[](const CharacterClassDefinition &a, const CharacterClassDefinition &b)
 	{
 		return a.getName().compare(b.getName()) < 0;
 	});
@@ -55,22 +53,23 @@ ChooseClassPanel::ChooseClassPanel(Game &game)
 		const int x = 89;
 		const int y = 32;
 
-		const auto &exeData = game.getMiscAssets().getExeData();
+		const auto &exeData = game.getBinaryAssetLibrary().getExeData();
 		const std::string &text = exeData.charCreation.chooseClassList;
 
+		const auto &fontLibrary = game.getFontLibrary();
 		const RichTextString richText(
 			text,
 			FontName::C,
 			Color(211, 211, 211),
 			TextAlignment::Left,
-			game.getFontManager());
+			fontLibrary);
 
-		return std::make_unique<TextBox>(x, y, richText, game.getRenderer());
+		return std::make_unique<TextBox>(x, y, richText, fontLibrary, game.getRenderer());
 	}();
 
 	this->classesListBox = [this, &game]()
 	{
-		const auto &exeData = game.getMiscAssets().getExeData();
+		const auto &exeData = game.getBinaryAssetLibrary().getExeData();
 		const Rect classListRect = ChooseClassPanel::getClassListRect(exeData);
 		const int x = classListRect.getLeft();
 		const int y = classListRect.getTop();
@@ -91,7 +90,7 @@ ChooseClassPanel::ChooseClassPanel(Game &game)
 			elements,
 			FontName::A,
 			maxDisplayed,
-			game.getFontManager(),
+			game.getFontLibrary(),
 			game.getRenderer());
 	}();
 
@@ -106,7 +105,7 @@ ChooseClassPanel::ChooseClassPanel(Game &game)
 
 	this->upButton = [&game]
 	{
-		const auto &exeData = game.getMiscAssets().getExeData();
+		const auto &exeData = game.getBinaryAssetLibrary().getExeData();
 		const auto &chooseClassListUI = exeData.ui.chooseClassList;
 		const int x = chooseClassListUI.buttonUp.x;
 		const int y = chooseClassListUI.buttonUp.y;
@@ -125,7 +124,7 @@ ChooseClassPanel::ChooseClassPanel(Game &game)
 
 	this->downButton = [&game]
 	{
-		const auto &exeData = game.getMiscAssets().getExeData();
+		const auto &exeData = game.getBinaryAssetLibrary().getExeData();
 		const auto &chooseClassListUI = exeData.ui.chooseClassList;
 		const int x = chooseClassListUI.buttonDown.x;
 		const int y = chooseClassListUI.buttonDown.y;
@@ -147,11 +146,15 @@ ChooseClassPanel::ChooseClassPanel(Game &game)
 
 	this->acceptButton = []
 	{
-		auto function = [](Game &game, const CharacterClass &charClass)
+		auto function = [](Game &game, int charClassDefID)
 		{
-			game.setPanel<ChooseNamePanel>(game, charClass);
+			auto &charCreationState = game.getCharacterCreationState();
+			charCreationState.setClassDefID(charClassDefID);
+
+			game.setPanel<ChooseNamePanel>(game);
 		};
-		return Button<Game&, const CharacterClass&>(function);
+
+		return Button<Game&, int>(function);
 	}();
 
 	// Leave the tooltip textures empty for now. Let them be created on demand. 
@@ -159,15 +162,9 @@ ChooseClassPanel::ChooseClassPanel(Game &game)
 	DebugAssert(this->tooltipTextures.size() == 0);
 }
 
-Panel::CursorData ChooseClassPanel::getCurrentCursor() const
+std::optional<Panel::CursorData> ChooseClassPanel::getCurrentCursor() const
 {
-	auto &game = this->getGame();
-	auto &renderer = game.getRenderer();
-	auto &textureManager = game.getTextureManager();
-	const auto &texture = textureManager.getTexture(
-		TextureFile::fromName(TextureName::SwordCursor),
-		PaletteFile::fromName(PaletteName::Default), renderer);
-	return CursorData(&texture, CursorAlignment::TopLeft);
+	return this->getDefaultCursor();
 }
 
 void ChooseClassPanel::handleEvent(const SDL_Event &e)
@@ -193,7 +190,7 @@ void ChooseClassPanel::handleEvent(const SDL_Event &e)
 
 	// See if a class in the list was clicked, or if it is being scrolled. Use a custom
 	// width for the list box so it better fills the screen-space.
-	const auto &exeData = game.getMiscAssets().getExeData();
+	const auto &exeData = game.getBinaryAssetLibrary().getExeData();
 	const Rect classListRect = ChooseClassPanel::getClassListRect(exeData);
 	if (classListRect.contains(originalPoint))
 	{
@@ -203,7 +200,19 @@ void ChooseClassPanel::handleEvent(const SDL_Event &e)
 			const int index = this->classesListBox->getClickedIndex(originalPoint);
 			if ((index >= 0) && (index < this->classesListBox->getElementCount()))
 			{
-				this->acceptButton.click(game, this->charClasses.at(index));
+				DebugAssertIndex(this->charClasses, index);
+				const CharacterClassDefinition &charClassDef = this->charClasses[index];
+
+				const auto &charClassLibrary = game.getCharacterClassLibrary();
+				int charClassDefID;
+				if (!charClassLibrary.tryGetDefinitionIndex(charClassDef, &charClassDefID))
+				{
+					DebugLogError("Couldn't get index of character class definition \"" +
+						charClassDef.getName() + "\".");
+					return;
+				}
+
+				this->acceptButton.click(game, charClassDefID);
 			}
 		}
 		else if (mouseWheelUp)
@@ -229,18 +238,20 @@ void ChooseClassPanel::handleEvent(const SDL_Event &e)
 	}
 }
 
-std::string ChooseClassPanel::getClassArmors(const CharacterClass &characterClass) const
+std::string ChooseClassPanel::getClassArmors(const CharacterClassDefinition &charClassDef) const
 {
-	const int armorCount = static_cast<int>(characterClass.getAllowedArmors().size());
+	std::vector<int> allowedArmors(charClassDef.getAllowedArmorCount());
+	for (int i = 0; i < static_cast<int>(allowedArmors.size()); i++)
+	{
+		allowedArmors[i] = charClassDef.getAllowedArmor(i);
+	}
 
-	// Sort as they are listed in the CharacterClassParser.
-	auto allowedArmors = characterClass.getAllowedArmors();
 	std::sort(allowedArmors.begin(), allowedArmors.end());
 
 	std::string armorString;
 
 	// Decide what the armor string says.
-	if (armorCount == 0)
+	if (allowedArmors.size() == 0)
 	{
 		armorString = "None";
 	}
@@ -249,15 +260,16 @@ std::string ChooseClassPanel::getClassArmors(const CharacterClass &characterClas
 		int lengthCounter = 0;
 
 		// Collect all allowed armor display names for the class.
-		for (int i = 0; i < armorCount; i++)
+		for (int i = 0; i < static_cast<int>(allowedArmors.size()); i++)
 		{
-			const auto materialType = allowedArmors.at(i);
-			auto materialString = ArmorMaterial::typeToString(materialType);
+			const int materialType = allowedArmors[i];
+			auto materialString = ArmorMaterial::typeToString(
+				static_cast<ArmorMaterialType>(materialType));
 			lengthCounter += static_cast<int>(materialString.size());
 			armorString.append(materialString);
 
 			// If not the last element, add a comma.
-			if (i < (armorCount - 1))
+			if (i < (static_cast<int>(allowedArmors.size()) - 1))
 			{
 				armorString.append(", ");
 
@@ -276,18 +288,20 @@ std::string ChooseClassPanel::getClassArmors(const CharacterClass &characterClas
 	return armorString;
 }
 
-std::string ChooseClassPanel::getClassShields(const CharacterClass &characterClass) const
+std::string ChooseClassPanel::getClassShields(const CharacterClassDefinition &charClassDef) const
 {
-	const int shieldCount = static_cast<int>(characterClass.getAllowedShields().size());
+	std::vector<int> allowedShields(charClassDef.getAllowedShieldCount());
+	for (int i = 0; i < static_cast<int>(allowedShields.size()); i++)
+	{
+		allowedShields[i] = charClassDef.getAllowedShield(i);
+	}
 
-	// Sort as they are listed in the CharacterClassParser.
-	auto allowedShields = characterClass.getAllowedShields();
 	std::sort(allowedShields.begin(), allowedShields.end());
 
 	std::string shieldsString;
 
 	// Decide what the shield string says.
-	if (shieldCount == 0)
+	if (allowedShields.size() == 0)
 	{
 		shieldsString = "None";
 	}
@@ -296,16 +310,16 @@ std::string ChooseClassPanel::getClassShields(const CharacterClass &characterCla
 		int lengthCounter = 0;
 
 		// Collect all allowed shield display names for the class.
-		for (int i = 0; i < shieldCount; i++)
+		for (int i = 0; i < static_cast<int>(allowedShields.size()); i++)
 		{
-			const auto shieldType = allowedShields.at(i);
-			auto dummyMetal = MetalType::Iron;
-			auto typeString = Shield(shieldType, dummyMetal).typeToString();
+			const int shieldType = allowedShields[i];
+			MetalType dummyMetal = MetalType::Iron;
+			auto typeString = Shield(static_cast<ShieldType>(shieldType), dummyMetal).typeToString();
 			lengthCounter += static_cast<int>(typeString.size());
 			shieldsString.append(typeString);
 
 			// If not the last element, add a comma.
-			if (i < (shieldCount - 1))
+			if (i < (static_cast<int>(allowedShields.size()) - 1))
 			{
 				shieldsString.append(", ");
 
@@ -324,16 +338,18 @@ std::string ChooseClassPanel::getClassShields(const CharacterClass &characterCla
 	return shieldsString;
 }
 
-std::string ChooseClassPanel::getClassWeapons(const CharacterClass &characterClass) const
+std::string ChooseClassPanel::getClassWeapons(const CharacterClassDefinition &charClassDef) const
 {
-	const int weaponCount = static_cast<int>(characterClass.getAllowedWeapons().size());
-
 	// Get weapon names from the executable.
-	const auto &exeData = this->getGame().getMiscAssets().getExeData();
+	const auto &exeData = this->getGame().getBinaryAssetLibrary().getExeData();
 	const auto &weaponStrings = exeData.equipment.weaponNames;
 
-	// Sort as they are listed in the CharacterClassParser.
-	std::vector<int> allowedWeapons = characterClass.getAllowedWeapons();
+	std::vector<int> allowedWeapons(charClassDef.getAllowedWeaponCount());
+	for (int i = 0; i < static_cast<int>(allowedWeapons.size()); i++)
+	{
+		allowedWeapons[i] = charClassDef.getAllowedWeapon(i);
+	}
+
 	std::sort(allowedWeapons.begin(), allowedWeapons.end(),
 		[&weaponStrings](int a, int b)
 	{
@@ -345,7 +361,7 @@ std::string ChooseClassPanel::getClassWeapons(const CharacterClass &characterCla
 	std::string weaponsString;
 
 	// Decide what the weapon string says.
-	if (weaponCount == 0)
+	if (allowedWeapons.size() == 0)
 	{
 		// If the class is allowed zero weapons, it still doesn't exclude fists, I think.
 		weaponsString = "None";
@@ -355,7 +371,7 @@ std::string ChooseClassPanel::getClassWeapons(const CharacterClass &characterCla
 		int lengthCounter = 0;
 
 		// Collect all allowed weapon display names for the class.
-		for (int i = 0; i < weaponCount; i++)
+		for (int i = 0; i < static_cast<int>(allowedWeapons.size()); i++)
 		{
 			const int weaponID = allowedWeapons.at(i);
 			const std::string &weaponName = weaponStrings.at(weaponID);
@@ -363,7 +379,7 @@ std::string ChooseClassPanel::getClassWeapons(const CharacterClass &characterCla
 			weaponsString.append(weaponName);
 
 			// If not the the last element, add a comma.
-			if (i < (weaponCount - 1))
+			if (i < (static_cast<int>(allowedWeapons.size()) - 1))
 			{
 				weaponsString.append(", ");
 
@@ -395,18 +411,30 @@ void ChooseClassPanel::drawClassTooltip(int tooltipIndex, Renderer &renderer)
 	auto tooltipIter = this->tooltipTextures.find(tooltipIndex);
 	if (tooltipIter == this->tooltipTextures.end())
 	{
-		const auto &characterClass = this->charClasses.at(tooltipIndex);
+		const auto &charClassDef = this->charClasses.at(tooltipIndex);
 
-		const std::string text = characterClass.getName() + " (" +
-			CharacterClassCategory::toString(characterClass.getCategoryName()) + " class)\n" +
-			"\n" + (characterClass.canCastMagic() ? "Can" : "Cannot") + " cast magic" + "\n" +
-			"Health die: " + "d" + std::to_string(characterClass.getHealthDie()) + "\n" +
-			"Armors: " + this->getClassArmors(characterClass) + "\n" +
-			"Shields: " + this->getClassShields(characterClass) + "\n" +
-			"Weapons: " + this->getClassWeapons(characterClass);
+		// Doesn't look like the category name is easy to get from the original data.
+		// Potentially could attach something to the char class definition like a bool
+		// saying "the class name is also a category name".
+		constexpr std::array<const char*, 3> ClassCategoryNames =
+		{
+			"Mage", "Thief", "Warrior"
+		};
+
+		const int categoryIndex = charClassDef.getCategoryID();
+		DebugAssertIndex(ClassCategoryNames, categoryIndex);
+		const std::string categoryName = ClassCategoryNames[categoryIndex];
+
+		const std::string text = charClassDef.getName() + " (" +
+			categoryName + " class)\n" +
+			"\n" + (charClassDef.canCastMagic() ? "Can" : "Cannot") + " cast magic" + "\n" +
+			"Health die: " + "d" + std::to_string(charClassDef.getHealthDie()) + "\n" +
+			"Armors: " + this->getClassArmors(charClassDef) + "\n" +
+			"Shields: " + this->getClassShields(charClassDef) + "\n" +
+			"Weapons: " + this->getClassWeapons(charClassDef);
 
 		Texture texture = Panel::createTooltip(
-			text, FontName::D, this->getGame().getFontManager(), renderer);
+			text, FontName::D, this->getGame().getFontLibrary(), renderer);
 
 		tooltipIter = this->tooltipTextures.emplace(std::make_pair(
 			tooltipIndex, std::move(texture))).first;
@@ -419,9 +447,9 @@ void ChooseClassPanel::drawClassTooltip(int tooltipIndex, Renderer &renderer)
 	const Int2 originalPosition = renderer.nativeToOriginal(mousePosition);
 	const int mouseX = originalPosition.x;
 	const int mouseY = originalPosition.y;
-	const int x = ((mouseX + 8 + tooltip.getWidth()) < Renderer::ORIGINAL_WIDTH) ?
+	const int x = ((mouseX + 8 + tooltip.getWidth()) < ArenaRenderUtils::SCREEN_WIDTH) ?
 		(mouseX + 8) : (mouseX - tooltip.getWidth());
-	const int y = ((mouseY + tooltip.getHeight()) < Renderer::ORIGINAL_HEIGHT) ?
+	const int y = ((mouseY + tooltip.getHeight()) < ArenaRenderUtils::SCREEN_HEIGHT) ?
 		(mouseY - 1) : (mouseY - tooltip.getHeight());
 
 	renderer.drawOriginal(tooltip, x, y);
@@ -432,37 +460,51 @@ void ChooseClassPanel::render(Renderer &renderer)
 	// Clear full screen.
 	renderer.clear();
 
-	// Set palette.
+	// Draw background.
 	auto &game = this->getGame();
 	auto &textureManager = game.getTextureManager();
-	textureManager.setPalette(PaletteFile::fromName(PaletteName::Default));
+	const std::string &backgroundFilename = ArenaTextureName::CharacterCreation;
+	const std::optional<PaletteID> backgroundPaletteID = textureManager.tryGetPaletteID(backgroundFilename.c_str());
+	if (!backgroundPaletteID.has_value())
+	{
+		DebugLogError("Couldn't get background palette ID for \"" + backgroundFilename + "\".");
+		return;
+	}
 
-	// Draw background.
-	const auto &background = textureManager.getTexture(
-		TextureFile::fromName(TextureName::CharacterCreation),
-		PaletteFile::fromName(PaletteName::BuiltIn), renderer);
-	renderer.drawOriginal(background);
+	const std::optional<TextureBuilderID> backgroundTextureBuilderID =
+		textureManager.tryGetTextureBuilderID(backgroundFilename.c_str());
+	if (!backgroundTextureBuilderID.has_value())
+	{
+		DebugLogError("Couldn't get background texture builder ID for \"" + backgroundFilename + "\".");
+		return;
+	}
+
+	renderer.drawOriginal(*backgroundTextureBuilderID, *backgroundPaletteID, textureManager);
 
 	// Draw list pop-up.
-	const auto &listPopUp = textureManager.getTexture(
-		TextureFile::fromName(TextureName::PopUp2),
-		TextureFile::fromName(TextureName::CharacterCreation), renderer);
-	renderer.drawOriginal(listPopUp, 55, 9,
-		listPopUp.getWidth(), listPopUp.getHeight());
+	const std::string &listPopUpFilename = ArenaTextureName::PopUp2;
+	const std::optional<TextureBuilderID> listPopUpTextureBuilderID =
+		textureManager.tryGetTextureBuilderID(listPopUpFilename.c_str());
+	if (!listPopUpTextureBuilderID.has_value())
+	{
+		DebugLogError("Couldn't get list pop-up texture builder ID for \"" + listPopUpFilename + "\".");
+		return;
+	}
+
+	renderer.drawOriginal(*listPopUpTextureBuilderID, *backgroundPaletteID, 55, 9, textureManager);
 
 	// Draw text: title, list.
 	renderer.drawOriginal(this->titleTextBox->getTexture(),
 		this->titleTextBox->getX(), this->titleTextBox->getY());
 	renderer.drawOriginal(this->classesListBox->getTexture(),
-		this->classesListBox->getPoint().x,
-		this->classesListBox->getPoint().y);
+		this->classesListBox->getPoint().x, this->classesListBox->getPoint().y);
 
 	// Draw tooltip if over a valid element in the list box.
 	const auto &inputManager = game.getInputManager();
 	const Int2 mousePosition = inputManager.getMousePosition();
 	const Int2 originalPoint = renderer.nativeToOriginal(mousePosition);
 
-	const auto &exeData = game.getMiscAssets().getExeData();
+	const auto &exeData = game.getBinaryAssetLibrary().getExeData();
 	const Rect classListRect = ChooseClassPanel::getClassListRect(exeData);
 	if (classListRect.contains(originalPoint))
 	{

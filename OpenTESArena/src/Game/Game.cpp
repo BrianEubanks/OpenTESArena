@@ -13,18 +13,22 @@
 #include "PlayerInterface.h"
 #include "../Assets/CityDataFile.h"
 #include "../Interface/Panel.h"
-#include "../Media/FontManager.h"
-#include "../Media/MusicFile.h"
-#include "../Media/MusicName.h"
+#include "../Interface/Surface.h"
 #include "../Media/TextureManager.h"
 #include "../Rendering/Renderer.h"
-#include "../Rendering/Surface.h"
 #include "../Utilities/Platform.h"
 
 #include "components/debug/Debug.h"
 #include "components/utilities/File.h"
 #include "components/utilities/String.h"
+#include "components/utilities/TextLinesFile.h"
 #include "components/vfs/manager.hpp"
+
+namespace
+{
+	// Size of scratch buffer in bytes, reset each frame.
+	constexpr int SCRATCH_BUFFER_SIZE = 65536;
+}
 
 Game::Game()
 {
@@ -56,14 +60,22 @@ Game::Game()
 		this->options.getAudio_SoundVolume(), this->options.getAudio_SoundChannels(),
 		this->options.getAudio_SoundResampling(), this->options.getAudio_Is3DAudio(), midiPath);
 
-	// Initialize the SDL renderer and window with the given settings.
-	this->renderer.init(this->options.getGraphics_ScreenWidth(),
-		this->options.getGraphics_ScreenHeight(),
-		static_cast<Renderer::WindowMode>(this->options.getGraphics_WindowMode()),
-		this->options.getGraphics_LetterboxMode());
+	// Initialize music library from file.
+	const std::string musicLibraryPath = this->basePath + "data/audio/MusicDefinitions.txt";
+	if (!this->musicLibrary.init(musicLibraryPath.c_str()))
+	{
+		DebugLogError("Couldn't init music library at \"" + musicLibraryPath + "\".");
+	}
 
-	// Initialize the texture manager.
-	this->textureManager.init();
+	// Initialize the renderer and window with the given settings.
+	constexpr RendererSystemType2D rendererSystemType2D = RendererSystemType2D::SDL2;
+	constexpr RendererSystemType3D rendererSystemType3D = RendererSystemType3D::SoftwareClassic;
+	if (!this->renderer.init(this->options.getGraphics_ScreenWidth(), this->options.getGraphics_ScreenHeight(),
+		static_cast<Renderer::WindowMode>(this->options.getGraphics_WindowMode()),
+		this->options.getGraphics_LetterboxMode(), rendererSystemType2D, rendererSystemType3D))
+	{
+		throw DebugException("Couldn't init renderer.");
+	}
 
 	// Determine which version of the game the Arena path is pointing to.
 	const bool isFloppyVersion = [this, arenaPathIsRelative]()
@@ -99,8 +111,31 @@ Game::Game()
 		throw DebugException("\"" + fullArenaPath + "\" does not have an Arena executable.");
 	}();
 
-	// Load various miscellaneous assets.
-	this->miscAssets.init(isFloppyVersion);
+	// Load fonts.
+	if (!this->fontLibrary.init())
+	{
+		DebugCrash("Couldn't init font library.");
+	}
+
+	// Load various asset libraries.
+	if (!this->binaryAssetLibrary.init(isFloppyVersion))
+	{
+		DebugCrash("Couldn't init binary asset library.");
+	}
+
+	if (!this->textAssetLibrary.init())
+	{
+		DebugCrash("Couldn't init text asset library.");
+	}
+
+	// Load character classes (dependent on original game's data).
+	this->charClassLibrary.init(this->binaryAssetLibrary.getExeData());
+
+	this->cinematicLibrary.init();
+	this->doorSoundLibrary.init();
+
+	// Load entity definitions (dependent on original game's data).
+	this->entityDefLibrary.init(this->binaryAssetLibrary.getExeData(), this->textureManager);
 
 	// Load and set window icon.
 	const Surface icon = [this]()
@@ -115,11 +150,38 @@ Game::Game()
 		return surface;
 	}();
 
+	// Load single-instance sounds file for the audio manager.
+	TextLinesFile singleInstanceSoundsFile;
+	const std::string singleInstanceSoundsPath = this->basePath + "data/audio/SingleInstanceSounds.txt";
+	if (singleInstanceSoundsFile.init(singleInstanceSoundsPath.c_str()))
+	{
+		for (int i = 0; i < singleInstanceSoundsFile.getLineCount(); i++)
+		{
+			const std::string &soundFilename = singleInstanceSoundsFile.getLine(i);
+			this->audioManager.addSingleInstanceSound(std::string(soundFilename));
+		}
+	}
+	else
+	{
+		DebugLogWarning("Missing single instance sounds file at \"" + singleInstanceSoundsPath + "\".");
+	}
+
 	this->renderer.setWindowIcon(icon);
+
+	this->random.init();
+	this->scratchAllocator.init(SCRATCH_BUFFER_SIZE);
 
 	// Initialize panel and music to default.
 	this->panel = Panel::defaultPanel(*this);
-	this->setMusic(MusicName::PercIntro);
+	
+	const MusicDefinition *mainMenuMusicDef = this->musicLibrary.getRandomMusicDefinition(
+		MusicDefinition::Type::MainMenu, this->random);
+	if (mainMenuMusicDef == nullptr)
+	{
+		DebugLogWarning("Missing main menu music.");
+	}
+
+	this->audioManager.setMusic(mainMenuMusicDef);
 
 	// Use a texture as the cursor instead.
 	SDL_ShowCursor(SDL_FALSE);
@@ -128,6 +190,7 @@ Game::Game()
 	// enters the game world, and the "next panel" is a temporary used by the game
 	// to avoid corruption between panel events which change the panel.
 	this->gameData = nullptr;
+	this->charCreationState = nullptr;
 	this->nextPanel = nullptr;
 	this->nextSubPanel = nullptr;
 
@@ -147,14 +210,39 @@ AudioManager &Game::getAudioManager()
 	return this->audioManager;
 }
 
+const MusicLibrary &Game::getMusicLibrary() const
+{
+	return this->musicLibrary;
+}
+
 InputManager &Game::getInputManager()
 {
 	return this->inputManager;
 }
 
-FontManager &Game::getFontManager()
+FontLibrary &Game::getFontLibrary()
 {
-	return this->fontManager;
+	return this->fontLibrary;
+}
+
+const CinematicLibrary &Game::getCinematicLibrary() const
+{
+	return this->cinematicLibrary;
+}
+
+const CharacterClassLibrary &Game::getCharacterClassLibrary() const
+{
+	return this->charClassLibrary;
+}
+
+const DoorSoundLibrary &Game::getDoorSoundLibrary() const
+{
+	return this->doorSoundLibrary;
+}
+
+const EntityDefinitionLibrary &Game::getEntityDefinitionLibrary() const
+{
+	return this->entityDefLibrary;
 }
 
 bool Game::gameDataIsActive() const
@@ -164,10 +252,19 @@ bool Game::gameDataIsActive() const
 
 GameData &Game::getGameData() const
 {
-	// The caller should not request the game data when there is no active session.
 	DebugAssert(this->gameDataIsActive());
-
 	return *this->gameData.get();
+}
+
+bool Game::characterCreationIsActive() const
+{
+	return this->charCreationState.get() != nullptr;
+}
+
+CharacterCreationState &Game::getCharacterCreationState() const
+{
+	DebugAssert(this->characterCreationIsActive());
+	return *this->charCreationState.get();
 }
 
 Options &Game::getOptions()
@@ -185,9 +282,24 @@ TextureManager &Game::getTextureManager()
 	return this->textureManager;
 }
 
-MiscAssets &Game::getMiscAssets()
+const BinaryAssetLibrary &Game::getBinaryAssetLibrary() const
 {
-	return this->miscAssets;
+	return this->binaryAssetLibrary;
+}
+
+const TextAssetLibrary &Game::getTextAssetLibrary() const
+{
+	return this->textAssetLibrary;
+}
+
+Random &Game::getRandom()
+{
+	return this->random;
+}
+
+ScratchAllocator &Game::getScratchAllocator()
+{
+	return this->scratchAllocator;
 }
 
 Profiler &Game::getProfiler()
@@ -223,15 +335,14 @@ void Game::popSubPanel()
 	this->requestedSubPanelPop = true;
 }
 
-void Game::setMusic(MusicName name)
-{
-	const std::string &filename = MusicFile::fromName(name);
-	this->audioManager.playMusic(filename);
-}
-
 void Game::setGameData(std::unique_ptr<GameData> gameData)
 {
 	this->gameData = std::move(gameData);
+}
+
+void Game::setCharacterCreationState(std::unique_ptr<CharacterCreationState> charCreationState)
+{
+	this->charCreationState = std::move(charCreationState);
 }
 
 void Game::initOptions(const std::string &basePath, const std::string &optionsPath)
@@ -409,16 +520,15 @@ void Game::render()
 	activePanel->renderSecondary(this->renderer);
 
 	// Get the active panel's cursor texture and alignment.
-	const Panel::CursorData cursor = activePanel->getCurrentCursor();
+	const std::optional<Panel::CursorData> cursor = activePanel->getCurrentCursor();
 
-	// Draw cursor if not null. Some panels do not define a cursor (like cinematics), 
-	// so their cursor is always null.
-	if (cursor.getTexture() != nullptr)
+	// Draw cursor if valid. Some panels do not define a cursor (like cinematics), so their cursor is empty.
+	if (cursor.has_value())
 	{
 		// The panel should not be drawing the cursor themselves. It's done here 
 		// just to make sure that the cursor is drawn only once and is always drawn last.
-		this->renderer.drawCursor(*cursor.getTexture(), cursor.getAlignment(),
-			this->inputManager.getMousePosition(), this->options.getGraphics_CursorScale());
+		this->renderer.drawCursor(cursor->getTextureBuilderID(), cursor->getPaletteID(), cursor->getAlignment(),
+			this->inputManager.getMousePosition(), this->options.getGraphics_CursorScale(), this->textureManager);
 	}
 
 	this->renderer.present();
@@ -482,6 +592,9 @@ void Game::loop()
 		const double dt = static_cast<double>(frameTime.count()) / timeUnitsReal;
 		const double clampedDt = std::fmin(frameTime.count(), maxFrameTime.count()) / timeUnitsReal;
 
+		// Reset scratch allocator for use with this frame.
+		this->scratchAllocator.clear();
+
 		// Update the input manager's state.
 		this->inputManager.update();
 
@@ -491,16 +604,16 @@ void Game::loop()
 			const AudioManager::ListenerData listenerData = [this]()
 			{
 				const Player &player = this->getGameData().getPlayer();
-				const Double3 &position = player.getPosition();
-				const Double3 &direction = player.getDirection();
-				return AudioManager::ListenerData(position, direction);
+				const NewDouble3 absolutePosition = VoxelUtils::coordToNewPoint(player.getPosition());
+				const NewDouble3 &direction = player.getDirection();
+				return AudioManager::ListenerData(absolutePosition, direction);
 			}();
 
-			this->audioManager.update(&listenerData);
+			this->audioManager.update(dt, &listenerData);
 		}
 		else
 		{
-			this->audioManager.update(nullptr);
+			this->audioManager.update(dt, nullptr);
 		}
 
 		// Update FPS counter.

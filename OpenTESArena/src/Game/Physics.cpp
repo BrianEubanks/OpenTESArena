@@ -1,17 +1,21 @@
+#include <algorithm>
 #include <cmath>
 
 #include "Physics.h"
+#include "../Assets/ArenaTypes.h"
 #include "../Assets/MIFFile.h"
 #include "../Entities/Entity.h"
 #include "../Entities/EntityType.h"
 #include "../Math/Constants.h"
 #include "../Math/MathUtils.h"
 #include "../Math/Matrix4.h"
-#include "../World/VoxelDataType.h"
-#include "../World/VoxelFacing.h"
+#include "../Math/Quad.h"
+#include "../World/ArenaVoxelUtils.h"
+#include "../World/ChunkUtils.h"
+#include "../World/LevelData.h"
+#include "../World/VoxelFacing3D.h"
 #include "../World/VoxelGeometry.h"
 #include "../World/VoxelGrid.h"
-#include "../World/VoxelUtils.h"
 
 #include "components/debug/Debug.h"
 
@@ -19,11 +23,11 @@
 
 namespace Physics
 {
-	using VoxelEntityMap = std::unordered_map<Int3, std::vector<EntityManager::EntityVisibilityData>>;
+	using VoxelEntityMap = std::unordered_map<NewInt3, std::vector<EntityManager::EntityVisibilityData>>;
 
 	// Converts the normal to the associated voxel facing on success. Not all conversions
 	// exist, for example, diagonals have normals but do not have a voxel facing.
-	bool TryGetFacingFromNormal(const Double3 &normal, VoxelFacing *outFacing)
+	bool TryGetFacingFromNormal(const Double3 &normal, VoxelFacing3D *outFacing)
 	{
 		DebugAssert(outFacing != nullptr);
 
@@ -32,27 +36,27 @@ namespace Physics
 		bool success = true;
 		if (normal.dot(Double3::UnitX) > oneMinusEpsilon)
 		{
-			*outFacing = VoxelFacing::PositiveX;
+			*outFacing = VoxelFacing3D::PositiveX;
 		}
 		else if (normal.dot(-Double3::UnitX) > oneMinusEpsilon)
 		{
-			*outFacing = VoxelFacing::NegativeX;
+			*outFacing = VoxelFacing3D::NegativeX;
 		}
 		else if (normal.dot(Double3::UnitY) > oneMinusEpsilon)
 		{
-			*outFacing = VoxelFacing::PositiveY;
+			*outFacing = VoxelFacing3D::PositiveY;
 		}
 		else if (normal.dot(-Double3::UnitY) > oneMinusEpsilon)
 		{
-			*outFacing = VoxelFacing::NegativeY;
+			*outFacing = VoxelFacing3D::NegativeY;
 		}
 		else if (normal.dot(Double3::UnitZ) > oneMinusEpsilon)
 		{
-			*outFacing = VoxelFacing::PositiveZ;
+			*outFacing = VoxelFacing3D::PositiveZ;
 		}
 		else if (normal.dot(-Double3::UnitZ) > oneMinusEpsilon)
 		{
-			*outFacing = VoxelFacing::NegativeZ;
+			*outFacing = VoxelFacing3D::NegativeZ;
 		}
 		else
 		{
@@ -64,31 +68,26 @@ namespace Physics
 
 	// Builds a set of voxels that are at least partially touched by entities. Ignores entities
 	// behind the camera.
-	Physics::VoxelEntityMap makeVoxelEntityMap(const Double3 &cameraPosition,
-		const Double3 &cameraDirection, int chunkDistance, double ceilingHeight,
-		const VoxelGrid &voxelGrid, const EntityManager &entityManager)
+	Physics::VoxelEntityMap makeVoxelEntityMap(const CoordDouble3 &cameraCoord, const NewDouble3 &cameraDirection,
+		int chunkDistance, double ceilingHeight, const VoxelGrid &voxelGrid, const EntityManager &entityManager,
+		const EntityDefinitionLibrary &entityDefLibrary)
 	{
-		const Double2 cameraPosXZ(cameraPosition.x, cameraPosition.z);
-		const Double2 cameraDirXZ(cameraDirection.x, cameraDirection.z);
-
-		const NewInt2 cameraVoxelXZ(
-			static_cast<int>(std::floor(cameraPosXZ.x)),
-			static_cast<int>(std::floor(cameraPosXZ.y)));
-		const ChunkInt2 cameraChunk = VoxelUtils::newVoxelToChunk(
-			cameraVoxelXZ, voxelGrid.getWidth(), voxelGrid.getDepth());
+		const NewDouble3 absoluteCameraPosition = VoxelUtils::coordToNewPoint(cameraCoord);
+		const NewDouble2 absoluteCameraPositionXZ(absoluteCameraPosition.x, absoluteCameraPosition.z);
+		const NewDouble2 cameraDirXZ(cameraDirection.x, cameraDirection.z);
 
 		ChunkInt2 minChunk, maxChunk;
-		VoxelUtils::getSurroundingChunks(cameraChunk, chunkDistance, &minChunk, &maxChunk);
+		ChunkUtils::getSurroundingChunks(cameraCoord.chunk, chunkDistance, &minChunk, &maxChunk);
 
 		// Gather up entities in nearby chunks.
 		const int totalNearbyEntities = [&entityManager, &minChunk, &maxChunk]()
 		{
 			int count = 0;
-			for (SNInt y = minChunk.y; y <= maxChunk.y; y++)
+			for (WEInt z = minChunk.y; z <= maxChunk.y; z++)
 			{
-				for (EWInt x = minChunk.x; x <= maxChunk.x; x++)
+				for (SNInt x = minChunk.x; x <= maxChunk.x; x++)
 				{
-					count += entityManager.getTotalCountInChunk(ChunkInt2(x, y));
+					count += entityManager.getTotalCountInChunk(ChunkInt2(x, z));
 				}
 			}
 
@@ -97,21 +96,21 @@ namespace Physics
 
 		std::vector<const Entity*> entities(totalNearbyEntities, nullptr);
 		int entityInsertIndex = 0;
-		auto addEntitiesFromChunk = [&entityManager, &entities, &entityInsertIndex](EWInt chunkX, SNInt chunkY)
+		auto addEntitiesFromChunk = [&entityManager, &entities, &entityInsertIndex](SNInt chunkX, WEInt chunkZ)
 		{
 			const Entity **entitiesPtr = entities.data() + entityInsertIndex;
 			const int size = static_cast<int>(entities.size()) - entityInsertIndex;
 			const int writtenCount = entityManager.getTotalEntitiesInChunk(
-				ChunkInt2(chunkX, chunkY), entitiesPtr, size);
+				ChunkInt2(chunkX, chunkZ), entitiesPtr, size);
 			DebugAssert(writtenCount <= size);
 			entityInsertIndex += writtenCount;
 		};
 
-		for (SNInt y = minChunk.y; y <= maxChunk.y; y++)
+		for (WEInt z = minChunk.y; z <= maxChunk.y; z++)
 		{
-			for (EWInt x = minChunk.x; x <= maxChunk.x; x++)
+			for (SNInt x = minChunk.x; x <= maxChunk.x; x++)
 			{
-				addEntitiesFromChunk(x, y);
+				addEntitiesFromChunk(x, z);
 			}
 		}
 
@@ -127,35 +126,41 @@ namespace Physics
 			const Entity &entity = *entityPtr;
 
 			// Skip any entities that are behind the camera.
-			Double2 entityPosEyeDiff = entity.getPosition() - cameraPosXZ;
+			const NewDouble2 absoluteEntityPosition = VoxelUtils::coordToNewPoint(entity.getPosition());
+			NewDouble2 entityPosEyeDiff = absoluteEntityPosition - absoluteCameraPositionXZ;
 			if (cameraDirXZ.dot(entityPosEyeDiff) < 0.0)
 			{
 				continue;
 			}
 
+			const CoordDouble2 cameraCoordXZ = VoxelUtils::newPointToCoord(absoluteCameraPositionXZ);
 			EntityManager::EntityVisibilityData visData;
-			entityManager.getEntityVisibilityData(entity, cameraPosXZ, ceilingHeight, voxelGrid, visData);
+			entityManager.getEntityVisibilityData(entity, cameraCoordXZ, ceilingHeight, voxelGrid,
+				entityDefLibrary, visData);
 
 			// Use a bounding box to determine which voxels the entity could be in.
-			Double3 minPoint, maxPoint;
-			entityManager.getEntityBoundingBox(entity, visData, &minPoint, &maxPoint);
+			CoordDouble3 minPoint, maxPoint;
+			entityManager.getEntityBoundingBox(entity, visData, entityDefLibrary, &minPoint, &maxPoint);
+
+			const NewDouble3 absoluteMinPoint = VoxelUtils::coordToNewPoint(minPoint);
+			const NewDouble3 absoluteMaxPoint = VoxelUtils::coordToNewPoint(maxPoint);
 
 			// Only iterate over voxels the entity could be in (at least partially).
 			// This loop should always hit at least 1 voxel.
-			const int startX = static_cast<int>(std::floor(minPoint.x));
-			const int endX = static_cast<int>(std::floor(maxPoint.x));
-			const int startY = static_cast<int>(std::floor(minPoint.y / ceilingHeight));
-			const int endY = static_cast<int>(std::floor(maxPoint.y / ceilingHeight));
-			const int startZ = static_cast<int>(std::floor(minPoint.z));
-			const int endZ = static_cast<int>(std::floor(maxPoint.z));
+			const SNInt startX = static_cast<SNInt>(std::floor(absoluteMinPoint.x));
+			const SNInt endX = static_cast<SNInt>(std::floor(absoluteMaxPoint.x));
+			const int startY = static_cast<int>(std::floor(absoluteMinPoint.y / ceilingHeight));
+			const int endY = static_cast<int>(std::floor(absoluteMaxPoint.y / ceilingHeight));
+			const WEInt startZ = static_cast<WEInt>(std::floor(absoluteMinPoint.z));
+			const WEInt endZ = static_cast<WEInt>(std::floor(absoluteMaxPoint.z));
 
-			for (int z = startZ; z <= endZ; z++)
+			for (WEInt z = startZ; z <= endZ; z++)
 			{
 				for (int y = startY; y <= endY; y++)
 				{
-					for (int x = startX; x <= endX; x++)
+					for (SNInt x = startX; x <= endX; x++)
 					{
-						const Int3 voxel(x, y, z);
+						const NewInt3 voxel(x, y, z);
 
 						// Add the entity to the list. Create a new voxel->entity list mapping if
 						// there isn't one for this voxel.
@@ -178,38 +183,41 @@ namespace Physics
 
 	// Checks an initial voxel for ray hits and writes them into the output parameter.
 	// Returns true if the ray hit something.
-	bool testInitialVoxelRay(const Double3 &rayStart, const Double3 &rayDirection,
-		const Int3 &voxel, VoxelFacing farFacing, const Double3 &farPoint, double ceilingHeight,
-		const VoxelGrid &voxelGrid, Physics::Hit &hit)
+	bool testInitialVoxelRay(const NewDouble3 &absoluteRayStart, const Double3 &rayDirection,
+		const NewInt3 &voxel, VoxelFacing3D farFacing, const Double3 &farPoint, double ceilingHeight,
+		const LevelData &levelData, Physics::Hit &hit)
 	{
+		const VoxelGrid &voxelGrid = levelData.getVoxelGrid();
 		const uint16_t voxelID = voxelGrid.getVoxel(voxel.x, voxel.y, voxel.z);
 
 		// Get the voxel definition associated with the voxel.
 		const VoxelDefinition &voxelDef = voxelGrid.getVoxelDef(voxelID);
-		const VoxelDataType voxelDataType = voxelDef.dataType;
+		const ArenaTypes::VoxelType voxelType = voxelDef.type;
 
 		// Determine which type the voxel data is and run the associated calculation.
-		if (voxelDataType == VoxelDataType::None)
+		if (voxelType == ArenaTypes::VoxelType::None)
 		{
 			// Do nothing.
 			return false;
 		}
-		else if (voxelDataType == VoxelDataType::Wall)
+		else if (voxelType == ArenaTypes::VoxelType::Wall)
 		{
 			// Opaque walls are always hit.
-			const double t = (farPoint - rayStart).length();
+			const double t = (farPoint - absoluteRayStart).length();
 			const Double3 hitPoint = farPoint;
-			hit.initVoxel(t, hitPoint, voxelID, voxel, &farFacing);
+			const CoordInt3 coord = VoxelUtils::newVoxelToCoord(voxel);
+			hit.initVoxel(t, hitPoint, voxelID, coord, &farFacing);
 			return true;
 		}
-		else if (voxelDataType == VoxelDataType::Floor)
+		else if (voxelType == ArenaTypes::VoxelType::Floor)
 		{
 			// Check if the ray hits the top of the voxel.
-			if (farFacing == VoxelFacing::PositiveY)
+			if (farFacing == VoxelFacing3D::PositiveY)
 			{
-				const double t = (farPoint - rayStart).length();
+				const double t = (farPoint - absoluteRayStart).length();
 				const Double3 hitPoint = farPoint;
-				hit.initVoxel(t, hitPoint, voxelID, voxel, &farFacing);
+				const CoordInt3 coord = VoxelUtils::newVoxelToCoord(voxel);
+				hit.initVoxel(t, hitPoint, voxelID, coord, &farFacing);
 				return true;
 			}
 			else
@@ -217,14 +225,15 @@ namespace Physics
 				return false;
 			}
 		}
-		else if (voxelDataType == VoxelDataType::Ceiling)
+		else if (voxelType == ArenaTypes::VoxelType::Ceiling)
 		{
 			// Check if the ray hits the bottom of the voxel.
-			if (farFacing == VoxelFacing::NegativeY)
+			if (farFacing == VoxelFacing3D::NegativeY)
 			{
-				const double t = (farPoint - rayStart).length();
+				const double t = (farPoint - absoluteRayStart).length();
 				const Double3 hitPoint = farPoint;
-				hit.initVoxel(t, hitPoint, voxelID, voxel, &farFacing);
+				const CoordInt3 coord = VoxelUtils::newVoxelToCoord(voxel);
+				hit.initVoxel(t, hitPoint, voxelID, coord, &farFacing);
 				return true;
 			}
 			else
@@ -232,13 +241,13 @@ namespace Physics
 				return false;
 			}
 		}
-		else if (voxelDataType == VoxelDataType::Raised)
+		else if (voxelType == ArenaTypes::VoxelType::Raised)
 		{
 			const VoxelDefinition::RaisedData &raised = voxelDef.raised;
 			const double raisedYBottom = (static_cast<double>(voxel.y) + raised.yOffset) * ceilingHeight;
 			const double raisedYTop = raisedYBottom + (raised.ySize * ceilingHeight);
 
-			if ((rayStart.y > raisedYBottom) && (rayStart.y < raisedYTop))
+			if ((absoluteRayStart.y > raisedYBottom) && (absoluteRayStart.y < raisedYTop))
 			{
 				// Inside the raised platform. See where the far point is.
 				if (farPoint.y < raisedYBottom)
@@ -253,12 +262,13 @@ namespace Physics
 					// Ray-plane intersection (guaranteed to hit a valid spot).
 					Double3 hitPoint;
 					const bool success = MathUtils::rayPlaneIntersection(
-						rayStart, rayDirection, planeOrigin, planeNormal, &hitPoint);
+						absoluteRayStart, rayDirection, planeOrigin, planeNormal, &hitPoint);
 					DebugAssert(success);
 
-					const double t = (hitPoint - rayStart).length();
-					const VoxelFacing facing = VoxelFacing::NegativeY;
-					hit.initVoxel(t, hitPoint, voxelID, voxel, &facing);
+					const double t = (hitPoint - absoluteRayStart).length();
+					const CoordInt3 coord = VoxelUtils::newVoxelToCoord(voxel);
+					const VoxelFacing3D facing = VoxelFacing3D::NegativeY;
+					hit.initVoxel(t, hitPoint, voxelID, coord, &facing);
 					return true;
 				}
 				else if (farPoint.y > raisedYTop)
@@ -273,24 +283,26 @@ namespace Physics
 					// Ray-plane intersection (guaranteed to hit a valid spot).
 					Double3 hitPoint;
 					const bool success = MathUtils::rayPlaneIntersection(
-						rayStart, rayDirection, planeOrigin, planeNormal, &hitPoint);
+						absoluteRayStart, rayDirection, planeOrigin, planeNormal, &hitPoint);
 					DebugAssert(success);
 
-					const double t = (hitPoint - rayStart).length();
-					const VoxelFacing facing = VoxelFacing::PositiveY;
-					hit.initVoxel(t, hitPoint, voxelID, voxel, &facing);
+					const double t = (hitPoint - absoluteRayStart).length();
+					const CoordInt3 coord = VoxelUtils::newVoxelToCoord(voxel);
+					const VoxelFacing3D facing = VoxelFacing3D::PositiveY;
+					hit.initVoxel(t, hitPoint, voxelID, coord, &facing);
 					return true;
 				}
 				else
 				{
 					// Hits the inside wall of the raised platform.
-					const double t = (farPoint - rayStart).length();
+					const double t = (farPoint - absoluteRayStart).length();
 					const Double3 hitPoint = farPoint;
-					hit.initVoxel(t, hitPoint, voxelID, voxel, &farFacing);
+					const CoordInt3 coord = VoxelUtils::newVoxelToCoord(voxel);
+					hit.initVoxel(t, hitPoint, voxelID, coord, &farFacing);
 					return true;
 				}
 			}
-			else if (rayStart.y > raisedYTop)
+			else if (absoluteRayStart.y > raisedYTop)
 			{
 				// Above the raised platform. See if the ray hits the top.
 				if (farPoint.y <= raisedYTop)
@@ -305,12 +317,13 @@ namespace Physics
 					// Ray-plane intersection (guaranteed to hit a valid spot).
 					Double3 hitPoint;
 					const bool success = MathUtils::rayPlaneIntersection(
-						rayStart, rayDirection, planeOrigin, planeNormal, &hitPoint);
+						absoluteRayStart, rayDirection, planeOrigin, planeNormal, &hitPoint);
 					DebugAssert(success);
 
-					const double t = (hitPoint - rayStart).length();
-					const VoxelFacing facing = VoxelFacing::PositiveY;
-					hit.initVoxel(t, hitPoint, voxelID, voxel, &facing);
+					const double t = (hitPoint - absoluteRayStart).length();
+					const CoordInt3 coord = VoxelUtils::newVoxelToCoord(voxel);
+					const VoxelFacing3D facing = VoxelFacing3D::PositiveY;
+					hit.initVoxel(t, hitPoint, voxelID, coord, &facing);
 					return true;
 				}
 				else
@@ -318,7 +331,7 @@ namespace Physics
 					return false;
 				}
 			}
-			else if (rayStart.y < raisedYBottom)
+			else if (absoluteRayStart.y < raisedYBottom)
 			{
 				// Below the raised platform. See if the ray hits the bottom.
 				if (farPoint.y >= raisedYBottom)
@@ -333,12 +346,13 @@ namespace Physics
 					// Ray-plane intersection (guaranteed to hit a valid spot).
 					Double3 hitPoint;
 					const bool success = MathUtils::rayPlaneIntersection(
-						rayStart, rayDirection, planeOrigin, planeNormal, &hitPoint);
+						absoluteRayStart, rayDirection, planeOrigin, planeNormal, &hitPoint);
 					DebugAssert(success);
 
-					const double t = (hitPoint - rayStart).length();
-					const VoxelFacing facing = VoxelFacing::NegativeY;
-					hit.initVoxel(t, hitPoint, voxelID, voxel, &facing);
+					const double t = (hitPoint - absoluteRayStart).length();
+					const CoordInt3 coord = VoxelUtils::newVoxelToCoord(voxel);
+					const VoxelFacing3D facing = VoxelFacing3D::NegativeY;
+					hit.initVoxel(t, hitPoint, voxelID, coord, &facing);
 					return true;
 				}
 				else
@@ -351,7 +365,7 @@ namespace Physics
 				return false;
 			}
 		}
-		else if (voxelDataType == VoxelDataType::Diagonal)
+		else if (voxelType == ArenaTypes::VoxelType::Diagonal)
 		{
 			const VoxelDefinition::DiagonalData &diagonal = voxelDef.diagonal;
 			const bool isRightDiag = diagonal.type1;
@@ -391,12 +405,13 @@ namespace Physics
 
 			Double3 hitPoint;
 			const bool success = MathUtils::rayQuadIntersection(
-				rayStart, rayDirection, bottomLeftPoint, bottomRightPoint, topRightPoint, &hitPoint);
+				absoluteRayStart, rayDirection, bottomLeftPoint, bottomRightPoint, topRightPoint, &hitPoint);
 
 			if (success)
 			{
-				const double t = (hitPoint - rayStart).length();
-				hit.initVoxel(t, hitPoint, voxelID, voxel, nullptr);
+				const double t = (hitPoint - absoluteRayStart).length();
+				const CoordInt3 coord = VoxelUtils::newVoxelToCoord(voxel);
+				hit.initVoxel(t, hitPoint, voxelID, coord, nullptr);
 				return true;
 			}
 			else
@@ -404,19 +419,20 @@ namespace Physics
 				return false;
 			}
 		}
-		else if (voxelDataType == VoxelDataType::TransparentWall)
+		else if (voxelType == ArenaTypes::VoxelType::TransparentWall)
 		{
 			// Back faces of transparent walls are invisible.
 			return false;
 		}
-		else if (voxelDataType == VoxelDataType::Edge)
+		else if (voxelType == ArenaTypes::VoxelType::Edge)
 		{
 			// See if the intersected facing and the edge's facing are the same, and only
 			// consider edges with collision.
 			const VoxelDefinition::EdgeData &edge = voxelDef.edge;
-			const VoxelFacing edgeFacing = edge.facing;
+			const VoxelFacing2D edgeFacing = edge.facing;
+			const VoxelFacing3D edgeFacing3D = VoxelUtils::convertFaceTo3D(edgeFacing);
 
-			if ((edgeFacing == farFacing) && edge.collider)
+			if ((edgeFacing3D == farFacing) && edge.collider)
 			{
 				// See if the ray hits within the edge with its Y offset.
 				const double edgeYBottom = (static_cast<double>(voxel.y) + edge.yOffset) * ceilingHeight;
@@ -424,9 +440,10 @@ namespace Physics
 
 				if ((farPoint.y >= edgeYBottom) && (farPoint.y <= edgeYTop))
 				{
-					const double t = (farPoint - rayStart).length();
+					const double t = (farPoint - absoluteRayStart).length();
 					const Double3 hitPoint = farPoint;
-					hit.initVoxel(t, hitPoint, voxelID, voxel, &farFacing);
+					const CoordInt3 coord = VoxelUtils::newVoxelToCoord(voxel);
+					hit.initVoxel(t, hitPoint, voxelID, coord, &farFacing);
 					return true;
 				}
 				else
@@ -439,21 +456,35 @@ namespace Physics
 				return false;
 			}
 		}
-		else if (voxelDataType == VoxelDataType::Chasm)
+		else if (voxelType == ArenaTypes::VoxelType::Chasm)
 		{
 			// The chasm type determines the depth relative to the top of the voxel.
 			const VoxelDefinition::ChasmData &chasm = voxelDef.chasm;
-			const bool isDryChasm = chasm.type == VoxelDefinition::ChasmData::Type::Dry;
-			const double voxelHeight = isDryChasm ? ceilingHeight : VoxelDefinition::ChasmData::WET_LAVA_DEPTH;
+			const bool isDryChasm = chasm.type == ArenaTypes::ChasmType::Dry;
+			const double voxelHeight = isDryChasm ? ceilingHeight : ArenaVoxelUtils::WET_CHASM_DEPTH;
 
 			const double chasmYTop = static_cast<double>(voxel.y + 1) * ceilingHeight;
 			const double chasmYBottom = chasmYTop - voxelHeight;
 
 			// See if the ray starts above or below the chasm floor.
-			if (rayStart.y >= chasmYBottom)
+			if (absoluteRayStart.y >= chasmYBottom)
 			{
+				// Get any non-default state for this chasm voxel.
+				const VoxelInstance::ChasmState *chasmState = [&voxel, &levelData]() -> const VoxelInstance::ChasmState*
+				{
+					const VoxelInstance *voxelInst = levelData.tryGetVoxelInstance(voxel, VoxelInstance::Type::Chasm);
+					if (voxelInst != nullptr)
+					{
+						return &voxelInst->getChasmState();
+					}
+					else
+					{
+						return nullptr;
+					}
+				}();
+
 				// Above the floor. See which face the ray hits.
-				if ((farFacing == VoxelFacing::NegativeY) || (farPoint.y < chasmYBottom))
+				if ((farFacing == VoxelFacing3D::NegativeY) || (farPoint.y < chasmYBottom))
 				{
 					// Hits the floor somewhere.
 					const Double3 planeOrigin(
@@ -465,20 +496,23 @@ namespace Physics
 					// Ray-plane intersection (guaranteed to hit a valid spot).
 					Double3 hitPoint;
 					const bool success = MathUtils::rayPlaneIntersection(
-						rayStart, rayDirection, planeOrigin, planeNormal, &hitPoint);
+						absoluteRayStart, rayDirection, planeOrigin, planeNormal, &hitPoint);
 					DebugAssert(success);
 
-					const double t = (hitPoint - rayStart).length();
-					const VoxelFacing facing = VoxelFacing::NegativeY;
-					hit.initVoxel(t, hitPoint, voxelID, voxel, &facing);
+					const double t = (hitPoint - absoluteRayStart).length();
+					const CoordInt3 coord = VoxelUtils::newVoxelToCoord(voxel);
+					const VoxelFacing3D facing = VoxelFacing3D::NegativeY;
+					hit.initVoxel(t, hitPoint, voxelID, coord, &facing);
 					return true;
 				}
-				else if (farFacing != VoxelFacing::PositiveY && chasm.faceIsVisible(farFacing))
+				else if ((farFacing != VoxelFacing3D::PositiveY) &&
+					((chasmState != nullptr) && chasmState->faceIsVisible(farFacing)))
 				{
 					// Hits a side wall.
-					const double t = (farPoint - rayStart).length();
+					const double t = (farPoint - absoluteRayStart).length();
 					const Double3 hitPoint = farPoint;
-					hit.initVoxel(t, hitPoint, voxelID, voxel, &farFacing);
+					const CoordInt3 coord = VoxelUtils::newVoxelToCoord(voxel);
+					hit.initVoxel(t, hitPoint, voxelID, coord, &farFacing);
 					return true;
 				}
 				else
@@ -502,12 +536,13 @@ namespace Physics
 					// Ray-plane intersection (guaranteed to hit a valid spot).
 					Double3 hitPoint;
 					const bool success = MathUtils::rayPlaneIntersection(
-						rayStart, rayDirection, planeOrigin, planeNormal, &hitPoint);
+						absoluteRayStart, rayDirection, planeOrigin, planeNormal, &hitPoint);
 					DebugAssert(success);
 
-					const double t = (hitPoint - rayStart).length();
-					const VoxelFacing facing = VoxelFacing::NegativeY;
-					hit.initVoxel(t, hitPoint, voxelID, voxel, &facing);
+					const double t = (hitPoint - absoluteRayStart).length();
+					const CoordInt3 coord = VoxelUtils::newVoxelToCoord(voxel);
+					const VoxelFacing3D facing = VoxelFacing3D::NegativeY;
+					hit.initVoxel(t, hitPoint, voxelID, coord, &facing);
 					return true;
 				}
 				else
@@ -516,7 +551,7 @@ namespace Physics
 				}
 			}
 		}
-		else if (voxelDataType == VoxelDataType::Door)
+		else if (voxelType == ArenaTypes::VoxelType::Door)
 		{
 			// Doors are not clickable when in the same voxel (besides, it would be complicated
 			// due to various oddities: some doors have back faces, swinging doors have corner
@@ -525,55 +560,58 @@ namespace Physics
 		}
 		else
 		{
-			DebugUnhandledReturnMsg(bool, std::to_string(static_cast<int>(voxelDataType)));
+			DebugUnhandledReturnMsg(bool, std::to_string(static_cast<int>(voxelType)));
 		}
 	}
 
 	// Checks a voxel for ray hits and writes them into the output parameter. Returns
 	// true if the ray hit something.
-	bool testVoxelRay(const Double3 &rayStart, const Double3 &rayDirection,
-		const Int3 &voxel, VoxelFacing nearFacing, const Double3 &nearPoint,
-		const Double3 &farPoint, double ceilingHeight, const VoxelGrid &voxelGrid, Physics::Hit &hit)
+	bool testVoxelRay(const NewDouble3 &absoluteRayStart, const Double3 &rayDirection, const NewInt3 &voxel,
+		VoxelFacing3D nearFacing, const Double3 &nearPoint, const Double3 &farPoint,
+		double ceilingHeight, const LevelData &levelData, Physics::Hit &hit)
 	{
+		const VoxelGrid &voxelGrid = levelData.getVoxelGrid();
 		const uint16_t voxelID = voxelGrid.getVoxel(voxel.x, voxel.y, voxel.z);
 
 		// Get the voxel definition associated with the voxel.
 		const VoxelDefinition &voxelDef = voxelGrid.getVoxelDef(voxelID);
-		const VoxelDataType voxelDataType = voxelDef.dataType;
+		const ArenaTypes::VoxelType voxelType = voxelDef.type;
 
 		// @todo: decide later if all voxel types can just use one VoxelGeometry block of code
 		// instead of branching on type here.
 
 		// Determine which type the voxel data is and run the associated calculation.
-		if (voxelDataType == VoxelDataType::None)
+		if (voxelType == ArenaTypes::VoxelType::None)
 		{
 			// Do nothing.
 			return false;
 		}
-		else if (voxelDataType == VoxelDataType::Wall)
+		else if (voxelType == ArenaTypes::VoxelType::Wall)
 		{
 			// Opaque walls are always hit.
-			const double t = (nearPoint - rayStart).length();
+			const double t = (nearPoint - absoluteRayStart).length();
 			const Double3 hitPoint = nearPoint;
-			hit.initVoxel(t, hitPoint, voxelID, voxel, &nearFacing);
+			const CoordInt3 coord = VoxelUtils::newVoxelToCoord(voxel);
+			hit.initVoxel(t, hitPoint, voxelID, coord, &nearFacing);
 			return true;
 		}
-		else if (voxelDataType == VoxelDataType::Floor)
+		else if (voxelType == ArenaTypes::VoxelType::Floor)
 		{
 			// Intersect the floor as a quad.
 			Quad quad;
-			const int quadsWritten = VoxelGeometry::getQuads(voxelDef, voxel, ceilingHeight, &quad, 1);
+			const int quadsWritten = VoxelGeometry::getQuads(voxelDef, voxel, ceilingHeight, nullptr, &quad, 1);
 			DebugAssert(quadsWritten == 1);
 
 			Double3 hitPoint;
 			const bool success = MathUtils::rayQuadIntersection(
-				rayStart, rayDirection, quad.getV0(), quad.getV1(), quad.getV2(), &hitPoint);
+				absoluteRayStart, rayDirection, quad.getV0(), quad.getV1(), quad.getV2(), &hitPoint);
 
 			if (success)
 			{
-				const double t = (hitPoint - rayStart).length();
-				const VoxelFacing facing = VoxelFacing::PositiveY;
-				hit.initVoxel(t, hitPoint, voxelID, voxel, &facing);
+				const double t = (hitPoint - absoluteRayStart).length();
+				const CoordInt3 coord = VoxelUtils::newVoxelToCoord(voxel);
+				const VoxelFacing3D facing = VoxelFacing3D::PositiveY;
+				hit.initVoxel(t, hitPoint, voxelID, coord, &facing);
 				return true;
 			}
 			else
@@ -581,22 +619,23 @@ namespace Physics
 				return false;
 			}
 		}
-		else if (voxelDataType == VoxelDataType::Ceiling)
+		else if (voxelType == ArenaTypes::VoxelType::Ceiling)
 		{
 			// Intersect the ceiling as a quad.
 			Quad quad;
-			const int quadsWritten = VoxelGeometry::getQuads(voxelDef, voxel, ceilingHeight, &quad, 1);
+			const int quadsWritten = VoxelGeometry::getQuads(voxelDef, voxel, ceilingHeight, nullptr, &quad, 1);
 			DebugAssert(quadsWritten == 1);
 
 			Double3 hitPoint;
 			const bool success = MathUtils::rayQuadIntersection(
-				rayStart, rayDirection, quad.getV0(), quad.getV1(), quad.getV2(), &hitPoint);
+				absoluteRayStart, rayDirection, quad.getV0(), quad.getV1(), quad.getV2(), &hitPoint);
 
 			if (success)
 			{
-				const double t = (hitPoint - rayStart).length();
-				const VoxelFacing facing = VoxelFacing::NegativeY;
-				hit.initVoxel(t, hitPoint, voxelID, voxel, &facing);
+				const double t = (hitPoint - absoluteRayStart).length();
+				const CoordInt3 coord = VoxelUtils::newVoxelToCoord(voxel);
+				const VoxelFacing3D facing = VoxelFacing3D::NegativeY;
+				hit.initVoxel(t, hitPoint, voxelID, coord, &facing);
 				return true;
 			}
 			else
@@ -604,15 +643,15 @@ namespace Physics
 				return false;
 			}
 		}
-		else if (voxelDataType == VoxelDataType::Raised)
+		else if (voxelType == ArenaTypes::VoxelType::Raised)
 		{
 			// Intersect each face of the platform and find the closest one (if any).
 			int quadCount;
-			VoxelGeometry::getInfo(voxelDef, &quadCount);
+			VoxelGeometry::getInfo(voxelDef, nullptr, &quadCount);
 
 			std::array<Quad, VoxelGeometry::MAX_QUADS> quads;
-			const int quadsWritten = VoxelGeometry::getQuads(
-				voxelDef, voxel, ceilingHeight, quads.data(), static_cast<int>(quads.size()));
+			const int quadsWritten = VoxelGeometry::getQuads(voxelDef, voxel, ceilingHeight,
+				nullptr, quads.data(), static_cast<int>(quads.size()));
 			DebugAssert(quadsWritten == quadCount);
 
 			double closestT = Hit::MAX_T;
@@ -625,11 +664,11 @@ namespace Physics
 
 				Double3 hitPoint;
 				const bool success = MathUtils::rayQuadIntersection(
-					rayStart, rayDirection, quad.getV0(), quad.getV1(), quad.getV2(), &hitPoint);
+					absoluteRayStart, rayDirection, quad.getV0(), quad.getV1(), quad.getV2(), &hitPoint);
 
 				if (success)
 				{
-					const double t = (hitPoint - rayStart).length();
+					const double t = (hitPoint - absoluteRayStart).length();
 					if (t < closestT)
 					{
 						closestT = t;
@@ -642,15 +681,16 @@ namespace Physics
 			if (closestT < Hit::MAX_T)
 			{
 				const Quad &closestQuad = quads[closestIndex];
+				const CoordInt3 coord = VoxelUtils::newVoxelToCoord(voxel);
 				const Double3 normal = closestQuad.getNormal();
-				VoxelFacing facing;
+				VoxelFacing3D facing;
 				if (Physics::TryGetFacingFromNormal(normal, &facing))
 				{
-					hit.initVoxel(closestT, closestHitPoint, voxelID, voxel, &facing);
+					hit.initVoxel(closestT, closestHitPoint, voxelID, coord, &facing);
 				}
 				else
 				{
-					hit.initVoxel(closestT, closestHitPoint, voxelID, voxel, nullptr);
+					hit.initVoxel(closestT, closestHitPoint, voxelID, coord, nullptr);
 				}
 
 				return true;
@@ -660,21 +700,22 @@ namespace Physics
 				return false;
 			}
 		}
-		else if (voxelDataType == VoxelDataType::Diagonal)
+		else if (voxelType == ArenaTypes::VoxelType::Diagonal)
 		{
 			// Intersect the diagonal as a quad.
 			Quad quad;
-			const int quadsWritten = VoxelGeometry::getQuads(voxelDef, voxel, ceilingHeight, &quad, 1);
+			const int quadsWritten = VoxelGeometry::getQuads(voxelDef, voxel, ceilingHeight, nullptr, &quad, 1);
 			DebugAssert(quadsWritten == 1);
 
 			Double3 hitPoint;
 			const bool success = MathUtils::rayQuadIntersection(
-				rayStart, rayDirection, quad.getV0(), quad.getV1(), quad.getV2(), &hitPoint);
+				absoluteRayStart, rayDirection, quad.getV0(), quad.getV1(), quad.getV2(), &hitPoint);
 
 			if (success)
 			{
-				const double t = (hitPoint - rayStart).length();
-				hit.initVoxel(t, hitPoint, voxelID, voxel, nullptr);
+				const double t = (hitPoint - absoluteRayStart).length();
+				const CoordInt3 coord = VoxelUtils::newVoxelToCoord(voxel);
+				hit.initVoxel(t, hitPoint, voxelID, coord, nullptr);
 				return true;
 			}
 			else
@@ -682,15 +723,15 @@ namespace Physics
 				return false;
 			}
 		}
-		else if (voxelDataType == VoxelDataType::TransparentWall)
+		else if (voxelType == ArenaTypes::VoxelType::TransparentWall)
 		{
 			// Intersect each face and find the closest one (if any).
 			int quadCount;
-			VoxelGeometry::getInfo(voxelDef, &quadCount);
+			VoxelGeometry::getInfo(voxelDef, nullptr, &quadCount);
 
 			std::array<Quad, VoxelGeometry::MAX_QUADS> quads;
-			const int quadsWritten = VoxelGeometry::getQuads(
-				voxelDef, voxel, ceilingHeight, quads.data(), static_cast<int>(quads.size()));
+			const int quadsWritten = VoxelGeometry::getQuads(voxelDef, voxel, ceilingHeight,
+				nullptr, quads.data(), static_cast<int>(quads.size()));
 			DebugAssert(quadsWritten == quadCount);
 
 			double closestT = Hit::MAX_T;
@@ -703,11 +744,11 @@ namespace Physics
 
 				Double3 hitPoint;
 				const bool success = MathUtils::rayQuadIntersection(
-					rayStart, rayDirection, quad.getV0(), quad.getV1(), quad.getV2(), &hitPoint);
+					absoluteRayStart, rayDirection, quad.getV0(), quad.getV1(), quad.getV2(), &hitPoint);
 
 				if (success)
 				{
-					const double t = (hitPoint - rayStart).length();
+					const double t = (hitPoint - absoluteRayStart).length();
 					if (t < closestT)
 					{
 						closestT = t;
@@ -720,15 +761,16 @@ namespace Physics
 			if (closestT < Hit::MAX_T)
 			{
 				const Quad &closestQuad = quads[closestIndex];
+				const CoordInt3 coord = VoxelUtils::newVoxelToCoord(voxel);
 				const Double3 normal = closestQuad.getNormal();
-				VoxelFacing facing;
+				VoxelFacing3D facing;
 				if (Physics::TryGetFacingFromNormal(normal, &facing))
 				{
-					hit.initVoxel(closestT, closestHitPoint, voxelID, voxel, &facing);
+					hit.initVoxel(closestT, closestHitPoint, voxelID, coord, &facing);
 				}
 				else
 				{
-					hit.initVoxel(closestT, closestHitPoint, voxelID, voxel, nullptr);
+					hit.initVoxel(closestT, closestHitPoint, voxelID, coord, nullptr);
 				}
 
 				return true;
@@ -738,7 +780,7 @@ namespace Physics
 				return false;
 			}
 		}
-		else if (voxelDataType == VoxelDataType::Edge)
+		else if (voxelType == ArenaTypes::VoxelType::Edge)
 		{
 			const VoxelDefinition::EdgeData &edge = voxelDef.edge;
 
@@ -746,17 +788,19 @@ namespace Physics
 			{
 				// Intersect the edge as a quad.
 				Quad quad;
-				const int quadsWritten = VoxelGeometry::getQuads(voxelDef, voxel, ceilingHeight, &quad, 1);
+				const int quadsWritten = VoxelGeometry::getQuads(voxelDef, voxel, ceilingHeight, nullptr, &quad, 1);
 				DebugAssert(quadsWritten == 1);
 
 				Double3 hitPoint;
 				const bool success = MathUtils::rayQuadIntersection(
-					rayStart, rayDirection, quad.getV0(), quad.getV1(), quad.getV2(), &hitPoint);
+					absoluteRayStart, rayDirection, quad.getV0(), quad.getV1(), quad.getV2(), &hitPoint);
 
 				if (success)
 				{
-					const double t = (hitPoint - rayStart).length();
-					hit.initVoxel(t, hitPoint, voxelID, voxel, &edge.facing);
+					const double t = (hitPoint - absoluteRayStart).length();
+					const CoordInt3 coord = VoxelUtils::newVoxelToCoord(voxel);
+					const VoxelFacing3D edgeFacing3D = VoxelUtils::convertFaceTo3D(edge.facing);
+					hit.initVoxel(t, hitPoint, voxelID, coord, &edgeFacing3D);
 					return true;
 				}
 				else
@@ -769,15 +813,17 @@ namespace Physics
 				return false;
 			}
 		}
-		else if (voxelDataType == VoxelDataType::Chasm)
+		else if (voxelType == ArenaTypes::VoxelType::Chasm)
 		{
+			const VoxelInstance *voxelInst = levelData.tryGetVoxelInstance(voxel, VoxelInstance::Type::Chasm);
+
 			// Intersect each face and find the closest one (if any).
 			int quadCount;
-			VoxelGeometry::getInfo(voxelDef, &quadCount);
+			VoxelGeometry::getInfo(voxelDef, voxelInst, &quadCount);
 
 			std::array<Quad, VoxelGeometry::MAX_QUADS> quads;
-			const int quadsWritten = VoxelGeometry::getQuads(
-				voxelDef, voxel, ceilingHeight, quads.data(), static_cast<int>(quads.size()));
+			const int quadsWritten = VoxelGeometry::getQuads(voxelDef, voxel, ceilingHeight,
+				voxelInst, quads.data(), static_cast<int>(quads.size()));
 			DebugAssert(quadsWritten == quadCount);
 
 			double closestT = Hit::MAX_T;
@@ -790,11 +836,11 @@ namespace Physics
 
 				Double3 hitPoint;
 				const bool success = MathUtils::rayQuadIntersection(
-					rayStart, rayDirection, quad.getV0(), quad.getV1(), quad.getV2(), &hitPoint);
+					absoluteRayStart, rayDirection, quad.getV0(), quad.getV1(), quad.getV2(), &hitPoint);
 
 				if (success)
 				{
-					const double t = (hitPoint - rayStart).length();
+					const double t = (hitPoint - absoluteRayStart).length();
 					if (t < closestT)
 					{
 						closestT = t;
@@ -807,15 +853,16 @@ namespace Physics
 			if (closestT < Hit::MAX_T)
 			{
 				const Quad &closestQuad = quads[closestIndex];
+				const CoordInt3 coord = VoxelUtils::newVoxelToCoord(voxel);
 				const Double3 normal = closestQuad.getNormal();
-				VoxelFacing facing;
+				VoxelFacing3D facing;
 				if (Physics::TryGetFacingFromNormal(normal, &facing))
 				{
-					hit.initVoxel(closestT, closestHitPoint, voxelID, voxel, &facing);
+					hit.initVoxel(closestT, closestHitPoint, voxelID, coord, &facing);
 				}
 				else
 				{
-					hit.initVoxel(closestT, closestHitPoint, voxelID, voxel, nullptr);
+					hit.initVoxel(closestT, closestHitPoint, voxelID, coord, nullptr);
 				}
 
 				return true;
@@ -825,19 +872,21 @@ namespace Physics
 				return false;
 			}
 		}
-		else if (voxelDataType == VoxelDataType::Door)
+		else if (voxelType == ArenaTypes::VoxelType::Door)
 		{
 			// @todo: ideally this method would take any hit on a door into consideration, since
 			// it's the calling code's responsibility to decide what to do based on the door's open
 			// state, but for now it will assume closed doors only, for simplicity.
 
+			const VoxelInstance *voxelInst = levelData.tryGetVoxelInstance(voxel, VoxelInstance::Type::OpenDoor);
+
 			// Intersect each face and find the closest one (if any).
 			int quadCount;
-			VoxelGeometry::getInfo(voxelDef, &quadCount);
+			VoxelGeometry::getInfo(voxelDef, voxelInst, &quadCount);
 
 			std::array<Quad, VoxelGeometry::MAX_QUADS> quads;
-			const int quadsWritten = VoxelGeometry::getQuads(
-				voxelDef, voxel, ceilingHeight, quads.data(), static_cast<int>(quads.size()));
+			const int quadsWritten = VoxelGeometry::getQuads(voxelDef, voxel, ceilingHeight,
+				voxelInst, quads.data(), static_cast<int>(quads.size()));
 			DebugAssert(quadsWritten == quadCount);
 
 			double closestT = Hit::MAX_T;
@@ -850,11 +899,11 @@ namespace Physics
 
 				Double3 hitPoint;
 				const bool success = MathUtils::rayQuadIntersection(
-					rayStart, rayDirection, quad.getV0(), quad.getV1(), quad.getV2(), &hitPoint);
+					absoluteRayStart, rayDirection, quad.getV0(), quad.getV1(), quad.getV2(), &hitPoint);
 
 				if (success)
 				{
-					const double t = (hitPoint - rayStart).length();
+					const double t = (hitPoint - absoluteRayStart).length();
 					if (t < closestT)
 					{
 						closestT = t;
@@ -867,15 +916,16 @@ namespace Physics
 			if (closestT < Hit::MAX_T)
 			{
 				const Quad &closestQuad = quads[closestIndex];
+				const CoordInt3 coord = VoxelUtils::newVoxelToCoord(voxel);
 				const Double3 normal = closestQuad.getNormal();
-				VoxelFacing facing;
+				VoxelFacing3D facing;
 				if (Physics::TryGetFacingFromNormal(normal, &facing))
 				{
-					hit.initVoxel(closestT, closestHitPoint, voxelID, voxel, &facing);
+					hit.initVoxel(closestT, closestHitPoint, voxelID, coord, &facing);
 				}
 				else
 				{
-					hit.initVoxel(closestT, closestHitPoint, voxelID, voxel, nullptr);
+					hit.initVoxel(closestT, closestHitPoint, voxelID, coord, nullptr);
 				}
 
 				return true;
@@ -887,15 +937,16 @@ namespace Physics
 		}
 		else
 		{
-			DebugUnhandledReturnMsg(bool, std::to_string(static_cast<int>(voxelDataType)));
+			DebugUnhandledReturnMsg(bool, std::to_string(static_cast<int>(voxelType)));
 		}
 	}
 
 	// Helper function for testing which entities in a voxel are intersected by a ray.
-	bool testEntitiesInVoxel(const Double3 &rayStart, const Double3 &rayDirection,
-		const Double3 &flatForward, const Double3 &flatRight, const Double3 &flatUp,
-		const Int3 &voxel, const VoxelEntityMap &voxelEntityMap, bool pixelPerfect,
-		const EntityManager &entityManager, const Renderer &renderer, Physics::Hit &hit)
+	bool testEntitiesInVoxel(const NewDouble3 &absoluteRayStart, const Double3 &rayDirection,
+		const Double3 &flatForward, const Double3 &flatRight, const Double3 &flatUp, const NewInt3 &voxel,
+		const VoxelEntityMap &voxelEntityMap, bool pixelPerfect, const Palette &palette,
+		const EntityManager &entityManager, const EntityDefinitionLibrary &entityDefLibrary,
+		const Renderer &renderer, Physics::Hit &hit)
 	{
 		// Use a separate hit variable so we can determine whether an entity was closer.
 		Physics::Hit entityHit;
@@ -909,20 +960,22 @@ namespace Physics
 			for (const auto &visData : entityVisDataList)
 			{
 				const Entity &entity = *visData.entity;
-				const EntityDefinition &entityDef = *entityManager.getEntityDef(entity.getDataIndex());
+				const EntityDefinition &entityDef = entityManager.getEntityDef(
+					entity.getDefinitionID(), entityDefLibrary);
+				const EntityAnimationDefinition::Keyframe &animKeyframe =
+					entityManager.getEntityAnimKeyframe(entity, visData, entityDefLibrary);
 
-				const double flatWidth = visData.keyframe.getWidth();
-				const double flatHeight = visData.keyframe.getHeight();
+				const double flatWidth = animKeyframe.getWidth();
+				const double flatHeight = animKeyframe.getHeight();
 
 				Double3 hitPoint;
-				if (renderer.getEntityRayIntersection(visData, entityDef.getInfData().flatIndex,
-					flatForward, flatRight, flatUp, flatWidth, flatHeight, rayStart,
-					rayDirection, pixelPerfect, &hitPoint))
+				if (renderer.getEntityRayIntersection(visData, flatForward, flatRight, flatUp,
+					flatWidth, flatHeight, absoluteRayStart, rayDirection, pixelPerfect, palette, &hitPoint))
 				{
-					const double distance = (hitPoint - rayStart).length();
+					const double distance = (hitPoint - absoluteRayStart).length();
 					if (distance < entityHit.getT())
 					{
-						entityHit.initEntity(distance, hitPoint, entity.getID());
+						entityHit.initEntity(distance, hitPoint, entity.getID(), entity.getEntityType());
 					}
 				}
 			}
@@ -942,11 +995,15 @@ namespace Physics
 
 	// Internal ray casting loop for stepping through individual voxels and checking
 	// ray intersections with voxel data and entities.
-	void rayCastInternal(const Double3 &rayStart, const Double3 &rayDirection,
-		const Double3 &cameraForward, double ceilingHeight, const VoxelGrid &voxelGrid,
-		const VoxelEntityMap &voxelEntityMap, bool pixelPerfect, const EntityManager &entityManager,
+	template <bool NonNegativeDirX, bool NonNegativeDirY, bool NonNegativeDirZ>
+	void rayCastInternal(const CoordDouble3 &rayStart, const NewDouble3 &rayDirection, const NewDouble3 &cameraForward,
+		double ceilingHeight, const LevelData &levelData, const VoxelEntityMap &voxelEntityMap,
+		bool pixelPerfect, const Palette &palette, const EntityDefinitionLibrary &entityDefLibrary,
 		const Renderer &renderer, Physics::Hit &hit)
 	{
+		const VoxelGrid &voxelGrid = levelData.getVoxelGrid();
+		const EntityManager &entityManager = levelData.getEntityManager();
+
 		// Each flat shares the same axes. The forward direction always faces opposite to 
 		// the camera direction.
 		const Double3 flatForward = Double3(-cameraForward.x, 0.0, -cameraForward.z).normalized();
@@ -958,11 +1015,12 @@ namespace Physics
 		const Double3 axisLen(1.0, ceilingHeight, 1.0);
 
 		// Initial voxel as reals and integers.
+		const NewDouble3 absoluteRayStart = VoxelUtils::coordToNewPoint(rayStart);
 		const Double3 rayStartVoxelReal(
-			std::floor(rayStart.x / axisLen.x),
-			std::floor(rayStart.y / axisLen.y),
-			std::floor(rayStart.z / axisLen.z));
-		const Int3 rayStartVoxel(
+			std::floor(absoluteRayStart.x / axisLen.x),
+			std::floor(absoluteRayStart.y / axisLen.y),
+			std::floor(absoluteRayStart.z / axisLen.z));
+		const NewInt3 rayStartVoxel(
 			static_cast<int>(rayStartVoxelReal.x),
 			static_cast<int>(rayStartVoxelReal.y),
 			static_cast<int>(rayStartVoxelReal.z));
@@ -971,16 +1029,12 @@ namespace Physics
 		// voxel side lengths.
 		const Double3 rayStartRelativeFloor = rayStartVoxelReal * axisLen;
 
-		const bool nonNegativeDirX = rayDirection.x >= 0.0;
-		const bool nonNegativeDirY = rayDirection.y >= 0.0;
-		const bool nonNegativeDirZ = rayDirection.z >= 0.0;
-
 		// Delta distance is how far the ray has to go to step one voxel's worth along a certain axis.
 		// This is affected by non-uniform grid properties like tall voxels.
 		const Double3 deltaDist(
-			(nonNegativeDirX ? axisLen.x : -axisLen.x) / rayDirection.x,
-			(nonNegativeDirY ? axisLen.y : -axisLen.y) / rayDirection.y,
-			(nonNegativeDirZ ? axisLen.z : -axisLen.z) / rayDirection.z);
+			(NonNegativeDirX ? axisLen.x : -axisLen.x) / rayDirection.x,
+			(NonNegativeDirY ? axisLen.y : -axisLen.y) / rayDirection.y,
+			(NonNegativeDirZ ? axisLen.z : -axisLen.z) / rayDirection.z);
 
 		DebugAssert(deltaDist.x >= 0.0);
 		DebugAssert(deltaDist.y >= 0.0);
@@ -988,64 +1042,45 @@ namespace Physics
 
 		// Step is the voxel delta per step (always +/- 1). The initial delta distances are percentages
 		// of the delta distances, dependent on the ray start position inside the voxel.
-		Int3 step;
-		Double3 initialDeltaDistPercents;
-		if (nonNegativeDirX)
-		{
-			step.x = 1;
-			initialDeltaDistPercents.x = 1.0 - ((rayStart.x - rayStartRelativeFloor.x) / axisLen.x);
-		}
-		else
-		{
-			step.x = -1;
-			initialDeltaDistPercents.x = (rayStart.x - rayStartRelativeFloor.x) / axisLen.x;
-		}
+		constexpr int stepX = NonNegativeDirX ? 1 : -1;
+		constexpr int stepY = NonNegativeDirY ? 1 : -1;
+		constexpr int stepZ = NonNegativeDirZ ? 1 : -1;
 
-		if (nonNegativeDirY)
-		{
-			step.y = 1;
-			initialDeltaDistPercents.y = 1.0 - ((rayStart.y - rayStartRelativeFloor.y) / axisLen.y);
-		}
-		else
-		{
-			step.y = -1;
-			initialDeltaDistPercents.y = (rayStart.y - rayStartRelativeFloor.y) / axisLen.y;
-		}
+		const double initialDeltaDistPercentX = NonNegativeDirX ?
+			(1.0 - ((absoluteRayStart.x - rayStartRelativeFloor.x) / axisLen.x)) :
+			((absoluteRayStart.x - rayStartRelativeFloor.x) / axisLen.x);
+		const double initialDeltaDistPercentY = NonNegativeDirY ?
+			(1.0 - ((absoluteRayStart.y - rayStartRelativeFloor.y) / axisLen.y)) :
+			((absoluteRayStart.y - rayStartRelativeFloor.y) / axisLen.y);
+		const double initialDeltaDistPercentZ = NonNegativeDirZ ?
+			(1.0 - ((absoluteRayStart.z - rayStartRelativeFloor.z) / axisLen.z)) :
+			((absoluteRayStart.z - rayStartRelativeFloor.z) / axisLen.z);
 
-		if (nonNegativeDirZ)
-		{
-			step.z = 1;
-			initialDeltaDistPercents.z = 1.0 - ((rayStart.z - rayStartRelativeFloor.z) / axisLen.z);
-		}
-		else
-		{
-			step.z = -1;
-			initialDeltaDistPercents.z = (rayStart.z - rayStartRelativeFloor.z) / axisLen.z;
-		}
-
-		DebugAssert(initialDeltaDistPercents.x >= 0.0);
-		DebugAssert(initialDeltaDistPercents.x <= 1.0);
-		DebugAssert(initialDeltaDistPercents.y >= 0.0);
-		DebugAssert(initialDeltaDistPercents.y <= 1.0);
-		DebugAssert(initialDeltaDistPercents.z >= 0.0);
-		DebugAssert(initialDeltaDistPercents.z <= 1.0);
+		DebugAssert(initialDeltaDistPercentX >= 0.0);
+		DebugAssert(initialDeltaDistPercentX <= 1.0);
+		DebugAssert(initialDeltaDistPercentY >= 0.0);
+		DebugAssert(initialDeltaDistPercentY <= 1.0);
+		DebugAssert(initialDeltaDistPercentZ >= 0.0);
+		DebugAssert(initialDeltaDistPercentZ <= 1.0);
 
 		// Initial delta distance is a fraction of delta distance based on the ray's position in
 		// the initial voxel.
-		Double3 initialDeltaDist = deltaDist * initialDeltaDistPercents;
+		const double initialDeltaDistX = deltaDist.x * initialDeltaDistPercentX;
+		const double initialDeltaDistY = deltaDist.y * initialDeltaDistPercentY;
+		const double initialDeltaDistZ = deltaDist.z * initialDeltaDistPercentZ;
 
 		// The visible voxel facings for each axis depending on ray direction. The facing is opposite
 		// to the direction (i.e. negative Y face if stepping upward).
-		const std::array<VoxelFacing, 3> visibleWallFacings =
+		constexpr std::array<VoxelFacing3D, 3> visibleWallFacings =
 		{
-			nonNegativeDirX ? VoxelFacing::NegativeX : VoxelFacing::PositiveX,
-			nonNegativeDirY ? VoxelFacing::NegativeY : VoxelFacing::PositiveY,
-			nonNegativeDirZ ? VoxelFacing::NegativeZ : VoxelFacing::PositiveZ,
+			NonNegativeDirX ? VoxelFacing3D::NegativeX : VoxelFacing3D::PositiveX,
+			NonNegativeDirY ? VoxelFacing3D::NegativeY : VoxelFacing3D::PositiveY,
+			NonNegativeDirZ ? VoxelFacing3D::NegativeZ : VoxelFacing3D::PositiveZ,
 		};
 
 		// The ray distance and intersected face of the voxel.
 		double rayDistance;
-		VoxelFacing facing;
+		VoxelFacing3D facing;
 
 		// Verify that the initial voxel coordinate is within the world bounds.
 		bool voxelIsValid = (rayStartVoxel.x >= 0) && (rayStartVoxel.y >= 0) &&
@@ -1058,30 +1093,31 @@ namespace Physics
 		{
 			// See how far away the initial wall is, and which voxel face was hit. This is basically
 			// "find min element index in array".
-			if ((initialDeltaDist.x < initialDeltaDist.y) && (initialDeltaDist.x < initialDeltaDist.z))
+			if ((initialDeltaDistX < initialDeltaDistY) && (initialDeltaDistX < initialDeltaDistZ))
 			{
-				rayDistance = initialDeltaDist.x;
+				rayDistance = initialDeltaDistX;
 				facing = visibleWallFacings[0];
 			}
-			else if (initialDeltaDist.y < initialDeltaDist.z)
+			else if (initialDeltaDistY < initialDeltaDistZ)
 			{
-				rayDistance = initialDeltaDist.y;
+				rayDistance = initialDeltaDistY;
 				facing = visibleWallFacings[1];
 			}
 			else
 			{
-				rayDistance = initialDeltaDist.z;
+				rayDistance = initialDeltaDistZ;
 				facing = visibleWallFacings[2];
 			}
 
 			// The initial far point is the wall hit.
-			const Double3 initialFarPoint = rayStart + (rayDirection * rayDistance);
+			const NewDouble3 initialFarPoint = absoluteRayStart + (rayDirection * rayDistance);
 
 			// Test the initial voxel for ray intersections.
-			bool success = Physics::testInitialVoxelRay(rayStart, rayDirection, rayStartVoxel,
-				facing, initialFarPoint, ceilingHeight, voxelGrid, hit);
-			success |= Physics::testEntitiesInVoxel(rayStart, rayDirection, flatForward, flatRight,
-				flatUp, rayStartVoxel, voxelEntityMap, pixelPerfect, entityManager, renderer, hit);
+			bool success = Physics::testInitialVoxelRay(absoluteRayStart, rayDirection, rayStartVoxel,
+				facing, initialFarPoint, ceilingHeight, levelData, hit);
+			success |= Physics::testEntitiesInVoxel(absoluteRayStart, rayDirection, flatForward, flatRight,
+				flatUp, rayStartVoxel, voxelEntityMap, pixelPerfect, palette, entityManager,
+				entityDefLibrary, renderer, hit);
 
 			if (success)
 			{
@@ -1091,43 +1127,51 @@ namespace Physics
 		}
 
 		// The current voxel coordinate in the DDA loop.
-		Int3 currentVoxel(rayStartVoxel.x, rayStartVoxel.y, rayStartVoxel.z);
+		NewInt3 currentVoxel(rayStartVoxel.x, rayStartVoxel.y, rayStartVoxel.z);
 
 		// Delta distance sums in each component, starting at the initial wall hit. The lowest
 		// component is the candidate for the next DDA loop.
-		Double3 deltaDistSum = initialDeltaDist;
+		double deltaDistSumX = initialDeltaDistX;
+		double deltaDistSumY = initialDeltaDistY;
+		double deltaDistSumZ = initialDeltaDistZ;
+
+		// Helper values for ray distance calculation.
+		constexpr double halfOneMinusStepXReal = static_cast<double>((1 - stepX) / 2);
+		constexpr double halfOneMinusStepYReal = static_cast<double>((1 - stepY) / 2);
+		constexpr double halfOneMinusStepZReal = static_cast<double>((1 - stepZ) / 2);
 
 		// Lambda for stepping to the next voxel coordinate in the grid and updating the ray distance.
-		auto doDDAStep = [&rayStart, &rayDirection, &voxelGrid, &deltaDist, nonNegativeDirX,
-			nonNegativeDirY, nonNegativeDirZ, &step, &initialDeltaDist, &visibleWallFacings,
-			&rayDistance, &facing, &voxelIsValid, &currentVoxel, &deltaDistSum]()
+		auto doDDAStep = [&absoluteRayStart, &rayDirection, &voxelGrid, &deltaDist, stepX, stepY, stepZ,
+			initialDeltaDistX, initialDeltaDistY, initialDeltaDistZ, &visibleWallFacings,
+			&rayDistance, &facing, &voxelIsValid, &currentVoxel, &deltaDistSumX, &deltaDistSumY,
+			&deltaDistSumZ, halfOneMinusStepXReal, halfOneMinusStepYReal, halfOneMinusStepZReal]()
 		{
-			if ((deltaDistSum.x < deltaDistSum.y) && (deltaDistSum.x < deltaDistSum.z))
+			if ((deltaDistSumX < deltaDistSumY) && (deltaDistSumX < deltaDistSumZ))
 			{
-				deltaDistSum.x += deltaDist.x;
-				currentVoxel.x += step.x;
+				deltaDistSumX += deltaDist.x;
+				currentVoxel.x += stepX;
 				facing = visibleWallFacings[0];
 				voxelIsValid &= (currentVoxel.x >= 0) && (currentVoxel.x < voxelGrid.getWidth());
-				rayDistance = (static_cast<double>(currentVoxel.x) -
-					rayStart.x + static_cast<double>((1 - step.x) / 2)) / rayDirection.x;
+				rayDistance = ((static_cast<double>(currentVoxel.x) - absoluteRayStart.x) +
+					halfOneMinusStepXReal) / rayDirection.x;
 			}
-			else if (deltaDistSum.y < deltaDistSum.z)
+			else if (deltaDistSumY < deltaDistSumZ)
 			{
-				deltaDistSum.y += deltaDist.y;
-				currentVoxel.y += step.y;
+				deltaDistSumY += deltaDist.y;
+				currentVoxel.y += stepY;
 				facing = visibleWallFacings[1];
 				voxelIsValid &= (currentVoxel.y >= 0) && (currentVoxel.y < voxelGrid.getHeight());
-				rayDistance = (static_cast<double>(currentVoxel.y) -
-					rayStart.y + static_cast<double>((1 - step.y) / 2)) / rayDirection.y;
+				rayDistance = ((static_cast<double>(currentVoxel.y) - absoluteRayStart.y) +
+					halfOneMinusStepYReal) / rayDirection.y;
 			}
 			else
 			{
-				deltaDistSum.z += deltaDist.z;
-				currentVoxel.z += step.z;
+				deltaDistSumZ += deltaDist.z;
+				currentVoxel.z += stepZ;
 				facing = visibleWallFacings[2];
 				voxelIsValid &= (currentVoxel.z >= 0) && (currentVoxel.z < voxelGrid.getDepth());
-				rayDistance = (static_cast<double>(currentVoxel.z) -
-					rayStart.z + static_cast<double>((1 - step.z) / 2)) / rayDirection.z;
+				rayDistance = ((static_cast<double>(currentVoxel.z) - absoluteRayStart.z) +
+					halfOneMinusStepZReal) / rayDirection.z;
 			}
 		};
 
@@ -1140,8 +1184,8 @@ namespace Physics
 		{
 			// Store part of the current DDA state. The loop needs to do another DDA step to calculate
 			// the point on the far side of this voxel.
-			const Int3 savedVoxel = currentVoxel;
-			const VoxelFacing savedFacing = facing;
+			const NewInt3 savedVoxel = currentVoxel;
+			const VoxelFacing3D savedFacing = facing;
 			const double savedDistance = rayDistance;
 
 			// Decide which voxel to step to next, and update the ray distance.
@@ -1149,14 +1193,15 @@ namespace Physics
 
 			// Near and far points in the voxel. The near point is where the wall was hit before, and 
 			// the far point is where the wall was just hit on the far side.
-			const Double3 nearPoint = rayStart + (rayDirection * savedDistance);
-			const Double3 farPoint = rayStart + (rayDirection * rayDistance);
+			const NewDouble3 nearPoint = absoluteRayStart + (rayDirection * savedDistance);
+			const NewDouble3 farPoint = absoluteRayStart + (rayDirection * rayDistance);
 
 			// Test the current voxel for ray intersections.
-			bool success = Physics::testVoxelRay(rayStart, rayDirection, savedVoxel, savedFacing,
-				nearPoint, farPoint, axisLen.y, voxelGrid, hit);
-			success |= Physics::testEntitiesInVoxel(rayStart, rayDirection, flatForward, flatRight,
-				flatUp, savedVoxel, voxelEntityMap, pixelPerfect, entityManager, renderer, hit);
+			bool success = Physics::testVoxelRay(absoluteRayStart, rayDirection, savedVoxel, savedFacing,
+				nearPoint, farPoint, axisLen.y, levelData, hit);
+			success |= Physics::testEntitiesInVoxel(absoluteRayStart, rayDirection, flatForward, flatRight,
+				flatUp, savedVoxel, voxelEntityMap, pixelPerfect, palette, entityManager, entityDefLibrary,
+				renderer, hit);
 
 			if (success)
 			{
@@ -1167,16 +1212,14 @@ namespace Physics
 	}
 }
 
-const double Physics::Hit::MAX_T = std::numeric_limits<double>::infinity();
-
-void Physics::Hit::initVoxel(double t, const Double3 &point, uint16_t id, const Int3 &voxel,
-	const VoxelFacing *facing)
+void Physics::Hit::initVoxel(double t, const Double3 &point, uint16_t id, const CoordInt3 &coord,
+	const VoxelFacing3D *facing)
 {
 	this->t = t;
 	this->point = point;
 	this->type = Hit::Type::Voxel;
 	this->voxelHit.id = id;
-	this->voxelHit.voxel = voxel;
+	this->voxelHit.coord = coord;
 
 	if (facing != nullptr)
 	{
@@ -1188,12 +1231,13 @@ void Physics::Hit::initVoxel(double t, const Double3 &point, uint16_t id, const 
 	}
 }
 
-void Physics::Hit::initEntity(double t, const Double3 &point, int id)
+void Physics::Hit::initEntity(double t, const Double3 &point, EntityID id, EntityType type)
 {
 	this->t = t;
 	this->point = point;
 	this->type = Hit::Type::Entity;
 	this->entityHit.id = id;
+	this->entityHit.type = type;
 }
 
 double Physics::Hit::getT() const
@@ -1233,10 +1277,10 @@ void Physics::Hit::setT(double t)
 	this->t = t;
 }
 
-bool Physics::rayCast(const Double3 &rayStart, const Double3 &rayDirection, int chunkDistance,
-	double ceilingHeight, const Double3 &cameraForward, bool pixelPerfect, bool includeEntities,
-	const EntityManager &entityManager, const VoxelGrid &voxelGrid, const Renderer &renderer,
-	Physics::Hit &hit)
+bool Physics::rayCast(const CoordDouble3 &rayStart, const NewDouble3 &rayDirection, int chunkDistance,
+	double ceilingHeight, const NewDouble3 &cameraForward, bool pixelPerfect, const Palette &palette,
+	bool includeEntities, const LevelData &levelData, const EntityDefinitionLibrary &entityDefLibrary,
+	const Renderer &renderer, Physics::Hit &hit)
 {
 	// Set the hit distance to max. This will ensure that if we don't hit a voxel but do hit an
 	// entity, the distance can still be used.
@@ -1245,24 +1289,88 @@ bool Physics::rayCast(const Double3 &rayStart, const Double3 &rayDirection, int 
 	VoxelEntityMap voxelEntityMap;
 	if (includeEntities)
 	{
-		voxelEntityMap = Physics::makeVoxelEntityMap(
-			rayStart, rayDirection, chunkDistance, ceilingHeight, voxelGrid, entityManager);
+		const VoxelGrid &voxelGrid = levelData.getVoxelGrid();
+		const EntityManager &entityManager = levelData.getEntityManager();
+		voxelEntityMap = Physics::makeVoxelEntityMap(rayStart, rayDirection, chunkDistance,
+			ceilingHeight, voxelGrid, entityManager, entityDefLibrary);
 	}
 
-	// Ray cast through the voxel grid, populating the output hit data.
-	Physics::rayCastInternal(rayStart, rayDirection, cameraForward, ceilingHeight, voxelGrid,
-		voxelEntityMap, pixelPerfect, entityManager, renderer, hit);
+	// Ray cast through the voxel grid, populating the output hit data. Use the ray direction
+	// booleans for better code generation (at the expense of having a pile of if/else branches
+	// here).
+	const bool nonNegativeDirX = rayDirection.x >= 0.0;
+	const bool nonNegativeDirY = rayDirection.y >= 0.0;
+	const bool nonNegativeDirZ = rayDirection.z >= 0.0;
+
+	if (nonNegativeDirX)
+	{
+		if (nonNegativeDirY)
+		{
+			if (nonNegativeDirZ)
+			{
+				Physics::rayCastInternal<true, true, true>(rayStart, rayDirection, cameraForward, ceilingHeight,
+					levelData, voxelEntityMap, pixelPerfect, palette, entityDefLibrary, renderer, hit);
+			}
+			else
+			{
+				Physics::rayCastInternal<true, true, false>(rayStart, rayDirection, cameraForward, ceilingHeight,
+					levelData, voxelEntityMap, pixelPerfect, palette, entityDefLibrary, renderer, hit);
+			}
+		}
+		else
+		{
+			if (nonNegativeDirZ)
+			{
+				Physics::rayCastInternal<true, false, true>(rayStart, rayDirection, cameraForward, ceilingHeight,
+					levelData, voxelEntityMap, pixelPerfect, palette, entityDefLibrary, renderer, hit);
+			}
+			else
+			{
+				Physics::rayCastInternal<true, false, false>(rayStart, rayDirection, cameraForward, ceilingHeight,
+					levelData, voxelEntityMap, pixelPerfect, palette, entityDefLibrary, renderer, hit);
+			}
+		}
+	}
+	else
+	{
+		if (nonNegativeDirY)
+		{
+			if (nonNegativeDirZ)
+			{
+				Physics::rayCastInternal<false, true, true>(rayStart, rayDirection, cameraForward, ceilingHeight,
+					levelData, voxelEntityMap, pixelPerfect, palette, entityDefLibrary, renderer, hit);
+			}
+			else
+			{
+				Physics::rayCastInternal<false, true, false>(rayStart, rayDirection, cameraForward, ceilingHeight,
+					levelData, voxelEntityMap, pixelPerfect, palette, entityDefLibrary, renderer, hit);
+			}
+		}
+		else
+		{
+			if (nonNegativeDirZ)
+			{
+				Physics::rayCastInternal<false, false, true>(rayStart, rayDirection, cameraForward, ceilingHeight,
+					levelData, voxelEntityMap, pixelPerfect, palette, entityDefLibrary, renderer, hit);
+			}
+			else
+			{
+				Physics::rayCastInternal<false, false, false>(rayStart, rayDirection, cameraForward, ceilingHeight,
+					levelData, voxelEntityMap, pixelPerfect, palette, entityDefLibrary, renderer, hit);
+			}
+		}
+	}
 
 	// Return whether the ray hit something.
 	return hit.getT() < Hit::MAX_T;
 }
 
-bool Physics::rayCast(const Double3 &rayStart, const Double3 &rayDirection, int chunkDistance,
-	const Double3 &cameraForward, bool pixelPerfect, bool includeEntities,
-	const EntityManager &entityManager, const VoxelGrid &voxelGrid, const Renderer &renderer,
+bool Physics::rayCast(const CoordDouble3 &rayStart, const NewDouble3 &rayDirection, int chunkDistance,
+	const NewDouble3 &cameraForward, bool pixelPerfect, const Palette &palette, bool includeEntities,
+	const LevelData &levelData, const EntityDefinitionLibrary &entityDefLibrary, const Renderer &renderer,
 	Physics::Hit &hit)
 {
 	constexpr double ceilingHeight = 1.0;
-	return Physics::rayCast(rayStart, rayDirection, chunkDistance, ceilingHeight, cameraForward,
-		pixelPerfect, includeEntities, entityManager, voxelGrid, renderer, hit);
+	return Physics::rayCast(rayStart, rayDirection, chunkDistance, ceilingHeight, cameraForward, pixelPerfect,
+		palette, includeEntities, levelData, entityDefLibrary, renderer, hit);
 }

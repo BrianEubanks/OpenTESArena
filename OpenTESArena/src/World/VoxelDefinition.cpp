@@ -1,435 +1,230 @@
-#include <algorithm>
-#include <array>
-#include <stdexcept>
-
+#include "MapType.h"
 #include "VoxelDefinition.h"
-#include "VoxelDataType.h"
-#include "VoxelFacing.h"
-#include "../Assets/INFFile.h"
-#include "../Assets/MIFFile.h"
+#include "VoxelFacing2D.h"
 
 #include "components/debug/Debug.h"
 
-bool VoxelDefinition::WallData::isMenu() const
+void VoxelDefinition::WallData::init(TextureAssetReference &&sideTextureAssetRef,
+	TextureAssetReference &&floorTextureAssetRef, TextureAssetReference &&ceilingTextureAssetRef)
 {
-	if (this->type == WallData::Type::Menu)
-	{
-		DebugAssert(this->menuID != -1);
-		return true;
-	}
-	else
-	{
-		return false;
-	}
+	this->sideTextureAssetRef = std::move(sideTextureAssetRef);
+	this->floorTextureAssetRef = std::move(floorTextureAssetRef);
+	this->ceilingTextureAssetRef = std::move(ceilingTextureAssetRef);
 }
 
-VoxelDefinition::WallData::MenuType VoxelDefinition::WallData::getMenuType(int menuID, bool isCity)
+void VoxelDefinition::FloorData::init(TextureAssetReference &&textureAssetRef, bool isWildWallColored)
 {
-	if (menuID != -1)
-	{
-		// Mappings of *MENU IDs to city menu types.
-		const std::array<std::pair<int, VoxelDefinition::WallData::MenuType>, 14> CityMenuMappings =
-		{
-			{
-				{ 0, VoxelDefinition::WallData::MenuType::Equipment },
-				{ 1, VoxelDefinition::WallData::MenuType::Tavern },
-				{ 2, VoxelDefinition::WallData::MenuType::MagesGuild },
-				{ 3, VoxelDefinition::WallData::MenuType::Temple },
-				{ 4, VoxelDefinition::WallData::MenuType::House },
-				{ 5, VoxelDefinition::WallData::MenuType::House },
-				{ 6, VoxelDefinition::WallData::MenuType::House },
-				{ 7, VoxelDefinition::WallData::MenuType::CityGates },
-				{ 8, VoxelDefinition::WallData::MenuType::CityGates },
-				{ 9, VoxelDefinition::WallData::MenuType::Noble },
-				{ 10, VoxelDefinition::WallData::MenuType::None },
-				{ 11, VoxelDefinition::WallData::MenuType::Palace },
-				{ 12, VoxelDefinition::WallData::MenuType::Palace },
-				{ 13, VoxelDefinition::WallData::MenuType::Palace }
-			}
-		};
-
-		// Mappings of *MENU IDs to wilderness menu types.
-		const std::array<std::pair<int, VoxelDefinition::WallData::MenuType>, 10> WildMenuMappings =
-		{
-			{
-				{ 0, VoxelDefinition::WallData::MenuType::None },
-				{ 1, VoxelDefinition::WallData::MenuType::Crypt },
-				{ 2, VoxelDefinition::WallData::MenuType::House },
-				{ 3, VoxelDefinition::WallData::MenuType::Tavern },
-				{ 4, VoxelDefinition::WallData::MenuType::Temple },
-				{ 5, VoxelDefinition::WallData::MenuType::Tower },
-				{ 6, VoxelDefinition::WallData::MenuType::CityGates },
-				{ 7, VoxelDefinition::WallData::MenuType::CityGates },
-				{ 8, VoxelDefinition::WallData::MenuType::Dungeon },
-				{ 9, VoxelDefinition::WallData::MenuType::Dungeon }
-			}
-		};
-
-		// Get the menu type associated with the *MENU ID and city boolean, or null if there
-		// is no mapping (only in exceptional cases). Use a pointer since iterators are tied
-		// to their std::array size.
-		const VoxelDefinition::WallData::MenuType *typePtr = [menuID, isCity, &CityMenuMappings,
-			&WildMenuMappings]()
-		{
-			auto getPtr = [menuID](const auto &arr)
-			{
-				const auto iter = std::find_if(arr.begin(), arr.end(),
-					[menuID](const std::pair<int, VoxelDefinition::WallData::MenuType> &pair)
-				{
-					return pair.first == menuID;
-				});
-
-				return (iter != arr.end()) ? &iter->second : nullptr;
-			};
-
-			// Interpretation of *MENU ID depends on whether it's a city or wilderness.
-			return isCity ? getPtr(CityMenuMappings) : getPtr(WildMenuMappings);
-		}();
-
-		// See if the array contains the associated *MENU ID.
-		if (typePtr != nullptr)
-		{
-			return *typePtr;
-		}
-		else
-		{
-			DebugLogWarning("Unrecognized *MENU ID \"" + std::to_string(menuID) + "\".");
-			return VoxelDefinition::WallData::MenuType::None;
-		}
-	}
-	else
-	{
-		// Not a *MENU block.
-		return VoxelDefinition::WallData::MenuType::None;
-	}
+	this->textureAssetRef = std::move(textureAssetRef);
+	this->isWildWallColored = isWildWallColored;
 }
 
-bool VoxelDefinition::WallData::menuLeadsToInterior(MenuType menuType)
+void VoxelDefinition::CeilingData::init(TextureAssetReference &&textureAssetRef)
 {
-	return (menuType == VoxelDefinition::WallData::MenuType::Crypt) ||
-		(menuType == VoxelDefinition::WallData::MenuType::Dungeon) ||
-		(menuType == VoxelDefinition::WallData::MenuType::Equipment) ||
-		(menuType == VoxelDefinition::WallData::MenuType::House) ||
-		(menuType == VoxelDefinition::WallData::MenuType::MagesGuild) ||
-		(menuType == VoxelDefinition::WallData::MenuType::Noble) ||
-		(menuType == VoxelDefinition::WallData::MenuType::Palace) ||
-		(menuType == VoxelDefinition::WallData::MenuType::Tavern) ||
-		(menuType == VoxelDefinition::WallData::MenuType::Temple) ||
-		(menuType == VoxelDefinition::WallData::MenuType::Tower);
+	this->textureAssetRef = std::move(textureAssetRef);
 }
 
-bool VoxelDefinition::WallData::menuHasDisplayName(MenuType menuType)
+void VoxelDefinition::RaisedData::init(TextureAssetReference &&sideTextureAssetRef,
+	TextureAssetReference &&floorTextureAssetRef, TextureAssetReference &&ceilingTextureAssetRef,
+	double yOffset, double ySize, double vTop, double vBottom)
 {
-	return (menuType == VoxelDefinition::WallData::MenuType::Equipment) ||
-		(menuType == VoxelDefinition::WallData::MenuType::MagesGuild) ||
-		(menuType == VoxelDefinition::WallData::MenuType::Tavern) ||
-		(menuType == VoxelDefinition::WallData::MenuType::Temple);
+	this->sideTextureAssetRef = std::move(sideTextureAssetRef);
+	this->floorTextureAssetRef = std::move(floorTextureAssetRef);
+	this->ceilingTextureAssetRef = std::move(ceilingTextureAssetRef);
+	this->yOffset = yOffset;
+	this->ySize = ySize;
+	this->vTop = vTop;
+	this->vBottom = vBottom;
 }
 
-const double VoxelDefinition::ChasmData::WET_LAVA_DEPTH = static_cast<double>(
-	INFFile::CeilingData::DEFAULT_HEIGHT) / MIFFile::ARENA_UNITS;
+void VoxelDefinition::DiagonalData::init(TextureAssetReference &&textureAssetRef, bool type1)
+{
+	this->textureAssetRef = std::move(textureAssetRef);
+	this->type1 = type1;
+}
+
+void VoxelDefinition::TransparentWallData::init(TextureAssetReference &&textureAssetRef, bool collider)
+{
+	this->textureAssetRef = std::move(textureAssetRef);
+	this->collider = collider;
+}
+
+void VoxelDefinition::EdgeData::init(TextureAssetReference &&textureAssetRef, double yOffset, bool collider,
+	bool flipped, VoxelFacing2D facing)
+{
+	this->textureAssetRef = std::move(textureAssetRef);
+	this->yOffset = yOffset;
+	this->collider = collider;
+	this->flipped = flipped;
+	this->facing = facing;
+}
+
+void VoxelDefinition::ChasmData::init(TextureAssetReference &&textureAssetRef, ArenaTypes::ChasmType type)
+{
+	this->textureAssetRef = std::move(textureAssetRef);
+	this->type = type;
+}
 
 bool VoxelDefinition::ChasmData::matches(const ChasmData &other) const
 {
-	return (this->id == other.id) && (this->north == other.north) && (this->east == other.east) &&
-		(this->south == other.south) && (this->west == other.west) && (this->type == other.type);
+	return (this->textureAssetRef == other.textureAssetRef) && (this->type == other.type);
 }
 
-bool VoxelDefinition::ChasmData::faceIsVisible(VoxelFacing facing) const
+void VoxelDefinition::DoorData::init(TextureAssetReference &&textureAssetRef, ArenaTypes::DoorType type)
 {
-	if (facing == VoxelFacing::PositiveX)
-	{
-		return this->north;
-	}
-	else if (facing == VoxelFacing::PositiveZ)
-	{
-		return this->east;
-	}
-	else if (facing == VoxelFacing::NegativeX)
-	{
-		return this->south;
-	}
-	else
-	{
-		return this->west;
-	}
+	this->textureAssetRef = std::move(textureAssetRef);
+	this->type = type;
 }
-
-int VoxelDefinition::ChasmData::getFaceCount() const
-{
-	// Assume chasms have floors.
-	return 1 + (this->north ? 1 : 0) + (this->east ? 1 : 0) +
-		(this->south ? 1 : 0) + (this->west ? 1 : 0);
-}
-
-int VoxelDefinition::DoorData::getOpenSoundIndex() const
-{
-	if (this->type == DoorData::Type::Swinging)
-	{
-		return 6;
-	}
-	else if (this->type == DoorData::Type::Sliding)
-	{
-		return 14;
-	}
-	else if (this->type == DoorData::Type::Raising)
-	{
-		return 15;
-	}
-	else
-	{
-		DebugUnhandledReturnMsg(int, std::to_string(static_cast<int>(this->type)));
-	}
-}
-
-VoxelDefinition::DoorData::CloseSoundData VoxelDefinition::DoorData::getCloseSoundData() const
-{
-	if (this->type == DoorData::Type::Swinging)
-	{
-		return { 5, DoorData::CloseSoundType::OnClosed };
-	}
-	else if (this->type == DoorData::Type::Sliding)
-	{
-		return { 14, DoorData::CloseSoundType::OnClosing };
-	}
-	else if (this->type == DoorData::Type::Raising)
-	{
-		return { 15, DoorData::CloseSoundType::OnClosing };
-	}
-	else
-	{
-		DebugUnhandledReturnMsg(VoxelDefinition::DoorData::CloseSoundData,
-			std::to_string(static_cast<int>(this->type)));
-	}
-}
-
-const int VoxelDefinition::TOTAL_IDS = 64;
 
 VoxelDefinition::VoxelDefinition()
 {
 	// Default to empty.
-	this->dataType = VoxelDataType::None;
+	this->type = ArenaTypes::VoxelType::None;
 }
 
-VoxelDefinition VoxelDefinition::makeWall(int sideID, int floorID, int ceilingID,
-	const int *menuID, WallData::Type type)
+VoxelDefinition VoxelDefinition::makeWall(TextureAssetReference &&sideTextureAssetRef,
+	TextureAssetReference &&floorTextureAssetRef, TextureAssetReference &&ceilingTextureAssetRef)
 {
-	if (sideID >= VoxelDefinition::TOTAL_IDS)
+	VoxelDefinition voxelDef;
+	voxelDef.type = ArenaTypes::VoxelType::Wall;
+	voxelDef.wall.init(std::move(sideTextureAssetRef), std::move(floorTextureAssetRef), 
+		std::move(ceilingTextureAssetRef));
+	return voxelDef;
+}
+
+VoxelDefinition VoxelDefinition::makeFloor(TextureAssetReference &&textureAssetRef, bool isWildWallColored)
+{
+	VoxelDefinition voxelDef;
+	voxelDef.type = ArenaTypes::VoxelType::Floor;
+	voxelDef.floor.init(std::move(textureAssetRef), isWildWallColored);
+	return voxelDef;
+}
+
+VoxelDefinition VoxelDefinition::makeCeiling(TextureAssetReference &&textureAssetRef)
+{
+	VoxelDefinition voxelDef;
+	voxelDef.type = ArenaTypes::VoxelType::Ceiling;
+	voxelDef.ceiling.init(std::move(textureAssetRef));
+	return voxelDef;
+}
+
+VoxelDefinition VoxelDefinition::makeRaised(TextureAssetReference &&sideTextureAssetRef,
+	TextureAssetReference &&floorTextureAssetRef, TextureAssetReference &&ceilingTextureAssetRef,
+	double yOffset, double ySize, double vTop, double vBottom)
+{
+	VoxelDefinition voxelDef;
+	voxelDef.type = ArenaTypes::VoxelType::Raised;
+	voxelDef.raised.init(std::move(sideTextureAssetRef), std::move(floorTextureAssetRef), 
+		std::move(ceilingTextureAssetRef), yOffset, ySize, vTop, vBottom);
+	return voxelDef;
+}
+
+VoxelDefinition VoxelDefinition::makeDiagonal(TextureAssetReference &&textureAssetRef, bool type1)
+{
+	VoxelDefinition voxelDef;
+	voxelDef.type = ArenaTypes::VoxelType::Diagonal;
+	voxelDef.diagonal.init(std::move(textureAssetRef), type1);
+	return voxelDef;
+}
+
+VoxelDefinition VoxelDefinition::makeTransparentWall(TextureAssetReference &&textureAssetRef, bool collider)
+{
+	VoxelDefinition voxelDef;
+	voxelDef.type = ArenaTypes::VoxelType::TransparentWall;
+	voxelDef.transparentWall.init(std::move(textureAssetRef), collider);
+	return voxelDef;
+}
+
+VoxelDefinition VoxelDefinition::makeEdge(TextureAssetReference &&textureAssetRef, double yOffset, bool collider,
+	bool flipped, VoxelFacing2D facing)
+{
+	VoxelDefinition voxelDef;
+	voxelDef.type = ArenaTypes::VoxelType::Edge;
+	voxelDef.edge.init(std::move(textureAssetRef), yOffset, collider, flipped, facing);
+	return voxelDef;
+}
+
+VoxelDefinition VoxelDefinition::makeChasm(TextureAssetReference &&textureAssetRef, ArenaTypes::ChasmType type)
+{
+	VoxelDefinition voxelDef;
+	voxelDef.type = ArenaTypes::VoxelType::Chasm;
+	voxelDef.chasm.init(std::move(textureAssetRef), type);
+	return voxelDef;
+}
+
+VoxelDefinition VoxelDefinition::makeDoor(TextureAssetReference &&textureAssetRef, ArenaTypes::DoorType type)
+{
+	VoxelDefinition voxelDef;
+	voxelDef.type = ArenaTypes::VoxelType::Door;
+	voxelDef.door.init(std::move(textureAssetRef), type);
+	return voxelDef;
+}
+
+bool VoxelDefinition::allowsChasmFace() const
+{
+	return (this->type != ArenaTypes::VoxelType::None) && (this->type != ArenaTypes::VoxelType::Chasm);
+}
+
+Buffer<TextureAssetReference> VoxelDefinition::getTextureAssetReferences() const
+{
+	Buffer<TextureAssetReference> buffer;
+
+	if (this->type == ArenaTypes::VoxelType::None)
 	{
-		DebugLogWarning("Wall side ID \"" + std::to_string(sideID) + "\" out of range.");
+		// Do nothing.
 	}
-
-	if (floorID >= VoxelDefinition::TOTAL_IDS)
+	else if (this->type == ArenaTypes::VoxelType::Wall)
 	{
-		DebugLogWarning("Wall floor ID \"" + std::to_string(floorID) + "\" out of range.");
+		buffer.init(3);
+		buffer.set(0, this->wall.sideTextureAssetRef);
+		buffer.set(1, this->wall.floorTextureAssetRef);
+		buffer.set(2, this->wall.ceilingTextureAssetRef);
 	}
-
-	if (ceilingID >= VoxelDefinition::TOTAL_IDS)
+	else if (this->type == ArenaTypes::VoxelType::Floor)
 	{
-		DebugLogWarning("Wall ceiling ID \"" + std::to_string(ceilingID) + "\" out of range.");
+		buffer.init(1);
+		buffer.set(0, this->floor.textureAssetRef);
 	}
-
-	VoxelDefinition data;
-	data.dataType = VoxelDataType::Wall;
-
-	VoxelDefinition::WallData &wall = data.wall;
-	wall.sideID = sideID % VoxelDefinition::TOTAL_IDS;
-	wall.floorID = floorID % VoxelDefinition::TOTAL_IDS;
-	wall.ceilingID = ceilingID % VoxelDefinition::TOTAL_IDS;
-
-	// If the menu ID parameter is given, use it.
-	if (menuID != nullptr)
+	else if (this->type == ArenaTypes::VoxelType::Ceiling)
 	{
-		DebugAssert(type == WallData::Type::Menu);
-		wall.menuID = *menuID;
+		buffer.init(1);
+		buffer.set(0, this->ceiling.textureAssetRef);
+	}
+	else if (this->type == ArenaTypes::VoxelType::Raised)
+	{
+		buffer.init(3);
+		buffer.set(0, this->raised.sideTextureAssetRef);
+		buffer.set(1, this->raised.floorTextureAssetRef);
+		buffer.set(2, this->raised.ceilingTextureAssetRef);
+	}
+	else if (this->type == ArenaTypes::VoxelType::Diagonal)
+	{
+		buffer.init(1);
+		buffer.set(0, this->diagonal.textureAssetRef);
+	}
+	else if (this->type == ArenaTypes::VoxelType::TransparentWall)
+	{
+		buffer.init(1);
+		buffer.set(0, this->transparentWall.textureAssetRef);
+	}
+	else if (this->type == ArenaTypes::VoxelType::Edge)
+	{
+		buffer.init(1);
+		buffer.set(0, this->edge.textureAssetRef);
+	}
+	else if (this->type == ArenaTypes::VoxelType::Chasm)
+	{
+		buffer.init(1);
+		buffer.set(0, this->chasm.textureAssetRef);
+	}
+	else if (this->type == ArenaTypes::VoxelType::Door)
+	{
+		buffer.init(1);
+		buffer.set(0, this->door.textureAssetRef);
 	}
 	else
 	{
-		DebugAssert(type != WallData::Type::Menu);
-		wall.menuID = -1; // Unused.
+		DebugNotImplementedMsg(std::to_string(static_cast<int>(this->type)));
 	}
 
-	wall.type = type;
-
-	return data;
-}
-
-VoxelDefinition VoxelDefinition::makeFloor(int id)
-{
-	if (id >= VoxelDefinition::TOTAL_IDS)
-	{
-		DebugLogWarning("Floor ID \"" + std::to_string(id) + "\" out of range.");
-	}
-
-	VoxelDefinition data;
-	data.dataType = VoxelDataType::Floor;
-
-	VoxelDefinition::FloorData &floor = data.floor;
-	floor.id = id % VoxelDefinition::TOTAL_IDS;
-
-	return data;
-}
-
-VoxelDefinition VoxelDefinition::makeCeiling(int id)
-{
-	if (id >= VoxelDefinition::TOTAL_IDS)
-	{
-		DebugLogWarning("Ceiling ID \"" + std::to_string(id) + "\" out of range.");
-	}
-
-	VoxelDefinition data;
-	data.dataType = VoxelDataType::Ceiling;
-
-	VoxelDefinition::CeilingData &ceiling = data.ceiling;
-	ceiling.id = id % VoxelDefinition::TOTAL_IDS;
-
-	return data;
-}
-
-VoxelDefinition VoxelDefinition::makeRaised(int sideID, int floorID, int ceilingID, double yOffset,
-	double ySize, double vTop, double vBottom)
-{
-	if (sideID >= VoxelDefinition::TOTAL_IDS)
-	{
-		DebugLogWarning("Raised side ID \"" + std::to_string(sideID) + "\" out of range.");
-	}
-
-	if (floorID >= VoxelDefinition::TOTAL_IDS)
-	{
-		DebugLogWarning("Raised floor ID \"" + std::to_string(floorID) + "\" out of range.");
-	}
-
-	if (ceilingID >= VoxelDefinition::TOTAL_IDS)
-	{
-		DebugLogWarning("Raised ceiling ID \"" + std::to_string(ceilingID) + "\" out of range.");
-	}
-
-	VoxelDefinition data;
-	data.dataType = VoxelDataType::Raised;
-
-	VoxelDefinition::RaisedData &raised = data.raised;
-	raised.sideID = sideID % VoxelDefinition::TOTAL_IDS;
-	raised.floorID = floorID % VoxelDefinition::TOTAL_IDS;
-	raised.ceilingID = ceilingID % VoxelDefinition::TOTAL_IDS;
-	raised.yOffset = yOffset;
-	raised.ySize = ySize;
-	raised.vTop = vTop;
-	raised.vBottom = vBottom;
-
-	return data;
-}
-
-VoxelDefinition VoxelDefinition::makeDiagonal(int id, bool type1)
-{
-	if (id >= VoxelDefinition::TOTAL_IDS)
-	{
-		DebugLogWarning("Diagonal ID \"" + std::to_string(id) + "\" out of range.");
-	}
-
-	VoxelDefinition data;
-	data.dataType = VoxelDataType::Diagonal;
-
-	VoxelDefinition::DiagonalData &diagonal = data.diagonal;
-	diagonal.id = id % VoxelDefinition::TOTAL_IDS;
-	diagonal.type1 = type1;
-
-	return data;
-}
-
-VoxelDefinition VoxelDefinition::makeTransparentWall(int id, bool collider)
-{
-	if (id >= VoxelDefinition::TOTAL_IDS)
-	{
-		DebugLogWarning("Transparent wall ID \"" + std::to_string(id) + "\" out of range.");
-	}
-
-	VoxelDefinition data;
-	data.dataType = VoxelDataType::TransparentWall;
-
-	VoxelDefinition::TransparentWallData &transparentWall = data.transparentWall;
-	transparentWall.id = id % VoxelDefinition::TOTAL_IDS;
-	transparentWall.collider = collider;
-
-	return data;
-}
-
-VoxelDefinition VoxelDefinition::makeEdge(int id, double yOffset, bool collider,
-	bool flipped, VoxelFacing facing)
-{
-	if (id >= VoxelDefinition::TOTAL_IDS)
-	{
-		DebugLogWarning("Edge ID \"" + std::to_string(id) + "\" out of range.");
-	}
-
-	VoxelDefinition data;
-	data.dataType = VoxelDataType::Edge;
-
-	VoxelDefinition::EdgeData &edge = data.edge;
-	edge.id = id % VoxelDefinition::TOTAL_IDS;
-	edge.yOffset = yOffset;
-	edge.collider = collider;
-	edge.flipped = flipped;
-	edge.facing = facing;
-
-	return data;
-}
-
-VoxelDefinition VoxelDefinition::makeChasm(int id, bool north, bool east, bool south, bool west,
-	ChasmData::Type type)
-{
-	if (id >= VoxelDefinition::TOTAL_IDS)
-	{
-		DebugLogWarning("Chasm ID \"" + std::to_string(id) + "\" out of range.");
-	}
-
-	VoxelDefinition data;
-	data.dataType = VoxelDataType::Chasm;
-
-	VoxelDefinition::ChasmData &chasm = data.chasm;
-	chasm.id = id % VoxelDefinition::TOTAL_IDS;
-	chasm.north = north;
-	chasm.east = east;
-	chasm.south = south;
-	chasm.west = west;
-	chasm.type = type;
-
-	return data;
-}
-
-VoxelDefinition VoxelDefinition::makeDoor(int id, DoorData::Type type)
-{
-	if (id >= VoxelDefinition::TOTAL_IDS)
-	{
-		DebugLogWarning("Door ID \"" + std::to_string(id) + "\" out of range.");
-	}
-
-	VoxelDefinition data;
-	data.dataType = VoxelDataType::Door;
-
-	VoxelDefinition::DoorData &door = data.door;
-	door.id = id % VoxelDefinition::TOTAL_IDS;
-	door.type = type;
-
-	return data;
-}
-
-Double3 VoxelDefinition::getNormal(VoxelFacing facing)
-{
-	// Decide what the normal is, based on the facing.
-	if (facing == VoxelFacing::PositiveX)
-	{
-		return Double3::UnitX;
-	}
-	else if (facing == VoxelFacing::NegativeX)
-	{
-		return -Double3::UnitX;
-	}
-	else if (facing == VoxelFacing::PositiveZ)
-	{
-		return Double3::UnitZ;
-	}
-	else
-	{
-		return -Double3::UnitZ;
-	}
+	return buffer;
 }

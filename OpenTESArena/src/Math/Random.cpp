@@ -1,19 +1,28 @@
 #include <ctime>
-#include <limits>
 
 #include "Random.h"
 
 Random::Random(int seed)
 {
-	this->generator = std::default_random_engine(seed);
-	this->integerDistribution = std::uniform_int_distribution<int>(
-		0, std::numeric_limits<int>::max());
-	this->realDistribution = std::uniform_real_distribution<double>(
-		0.0, std::nextafter(1.0, std::numeric_limits<double>::max()));
+	this->init(seed);
 }
 
 Random::Random()
-	: Random(static_cast<int>(time(nullptr))) { }
+{
+	this->init();
+}
+
+void Random::init(int seed)
+{
+	this->generator = std::default_random_engine(seed);
+	this->integerDistribution = std::uniform_int_distribution<int>(0, std::numeric_limits<int>::max());
+	this->realDistribution = std::uniform_real_distribution<double>(0.0, 1.0);
+}
+
+void Random::init()
+{
+	this->init(static_cast<int>(std::time(nullptr)));
+}
 
 int Random::next()
 {
@@ -31,9 +40,6 @@ double Random::nextReal()
 }
 
 // ArenaRandom
-
-const uint32_t ArenaRandom::DEFAULT_SEED = 12345;
-const int ArenaRandom::MAX = std::numeric_limits<uint16_t>::max();
 
 ArenaRandom::ArenaRandom(uint32_t seed)
 {

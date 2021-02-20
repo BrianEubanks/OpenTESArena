@@ -10,19 +10,29 @@
 #include "LogbookPanel.h"
 #include "PauseMenuPanel.h"
 #include "RichTextString.h"
+#include "Surface.h"
 #include "TextAlignment.h"
 #include "TextSubPanel.h"
+#include "Texture.h"
 #include "WorldMapPanel.h"
+#include "../Assets/ArenaPaletteName.h"
+#include "../Assets/ArenaSoundName.h"
+#include "../Assets/ArenaTextureName.h"
+#include "../Assets/BinaryAssetLibrary.h"
 #include "../Assets/CFAFile.h"
 #include "../Assets/CIFFile.h"
 #include "../Assets/ExeData.h"
-#include "../Assets/MiscAssets.h"
-#include "../Entities/CharacterClass.h"
+#include "../Entities/CharacterClassDefinition.h"
+#include "../Entities/CharacterClassLibrary.h"
 #include "../Entities/Entity.h"
+#include "../Entities/EntityAnimationInstance.h"
+#include "../Entities/EntityAnimationUtils.h"
 #include "../Entities/EntityType.h"
 #include "../Entities/Player.h"
+#include "../Game/ArenaClockUtils.h"
 #include "../Game/CardinalDirection.h"
 #include "../Game/CardinalDirectionName.h"
+#include "../Game/DateUtils.h"
 #include "../Game/GameData.h"
 #include "../Game/Game.h"
 #include "../Game/Options.h"
@@ -33,34 +43,26 @@
 #include "../Math/Vector2.h"
 #include "../Media/AudioManager.h"
 #include "../Media/Color.h"
-#include "../Media/FontManager.h"
+#include "../Media/FontLibrary.h"
 #include "../Media/FontName.h"
-#include "../Media/MusicName.h"
+#include "../Media/FontUtils.h"
 #include "../Media/MusicUtils.h"
-#include "../Media/PaletteFile.h"
-#include "../Media/PaletteName.h"
 #include "../Media/PortraitFile.h"
-#include "../Media/SoundFile.h"
-#include "../Media/SoundName.h"
-#include "../Media/TextureFile.h"
 #include "../Media/TextureManager.h"
-#include "../Media/TextureName.h"
+#include "../Rendering/ArenaRenderUtils.h"
 #include "../Rendering/Renderer.h"
-#include "../Rendering/Surface.h"
-#include "../Rendering/Texture.h"
-#include "../World/ExteriorWorldData.h"
-#include "../World/InteriorLevelData.h"
-#include "../World/InteriorWorldData.h"
+#include "../World/ArenaInteriorUtils.h"
+#include "../World/ArenaLevelUtils.h"
+#include "../World/ArenaVoxelUtils.h"
+#include "../World/ArenaWildUtils.h"
+#include "../World/ChunkUtils.h"
 #include "../World/LevelData.h"
-#include "../World/LevelUtils.h"
-#include "../World/Location.h"
-#include "../World/LocationDataType.h"
 #include "../World/LocationType.h"
 #include "../World/LocationUtils.h"
-#include "../World/VoxelDataType.h"
-#include "../World/VoxelFacing.h"
+#include "../World/MapType.h"
+#include "../World/SkyUtils.h"
+#include "../World/VoxelFacing3D.h"
 #include "../World/WeatherUtils.h"
-#include "../World/WorldType.h"
 
 #include "components/debug/Debug.h"
 #include "components/utilities/String.h"
@@ -85,7 +87,7 @@ namespace
 	// position so the cursor's click area is closer to the tip of each arrow, as is
 	// done in the original game (slightly differently, though. I think the middle
 	// cursor was originally top-aligned, not middle-aligned, which is strange).
-	const std::array<CursorAlignment, 9> ArrowCursorAlignments =
+	constexpr std::array<CursorAlignment, 9> ArrowCursorAlignments =
 	{
 		CursorAlignment::TopLeft,
 		CursorAlignment::Top,
@@ -116,17 +118,27 @@ namespace
 		const bool pixelPerfect = options.getInput_PixelPerfectSelection();
 
 		const auto &player = gameData.getPlayer();
-		const Double3 rayStart = player.getPosition();
-		const Double3 &cameraDirection = player.getDirection();
+		const CoordDouble3 &rayStart = player.getPosition();
+		const NewDouble3 &cameraDirection = player.getDirection();
 		const int viewWidth = windowDims.x;
 		const int viewHeight = renderer.getViewHeight();
 		const double viewAspectRatio = static_cast<double>(viewWidth) / static_cast<double>(viewHeight);
 
-		const auto &worldData = gameData.getWorldData();
+		const auto &worldData = gameData.getActiveWorld();
 		const auto &levelData = worldData.getActiveLevel();
 		const auto &entityManager = levelData.getEntityManager();
 		const auto &voxelGrid = levelData.getVoxelGrid();
 		const double ceilingHeight = levelData.getCeilingHeight();
+
+		const std::string &paletteFilename = ArenaPaletteName::Default;
+		auto &textureManager = game.getTextureManager();
+		const std::optional<PaletteID> paletteID = textureManager.tryGetPaletteID(paletteFilename.c_str());
+		if (!paletteID.has_value())
+		{
+			DebugCrash("Couldn't get palette ID for \"" + paletteFilename + "\".");
+		}
+
+		const Palette &palette = textureManager.getPaletteHandle(*paletteID);
 
 		for (int y = 0; y < windowDims.y; y += yOffset)
 		{
@@ -143,9 +155,9 @@ namespace
 				const bool includeEntities = false;
 
 				Physics::Hit hit;
-				const bool success = Physics::rayCast(rayStart, rayDirection, chunkDistance,
-					ceilingHeight, cameraDirection, pixelPerfect, includeEntities, entityManager,
-					voxelGrid, renderer, hit);
+				const bool success = Physics::rayCast(rayStart, rayDirection, chunkDistance, ceilingHeight,
+					cameraDirection, pixelPerfect, palette, includeEntities, levelData,
+					game.getEntityDefinitionLibrary(), renderer, hit);
 
 				if (success)
 				{
@@ -159,7 +171,10 @@ namespace
 								Color::Red, Color::Green, Color::Blue, Color::Cyan, Color::Yellow
 							};
 
-							color = colors[std::min(hit.getVoxelHit().voxel.y, 4)];
+							const CoordInt3 &coord = hit.getVoxelHit().coord;
+							const NewInt3 hitVoxel = VoxelUtils::coordToNewVoxel(coord);
+							const int colorsIndex = std::min(hitVoxel.y, 4);
+							color = colors[colorsIndex];
 							break;
 						}
 						case Physics::Hit::Type::Entity:
@@ -187,7 +202,7 @@ namespace
 		const auto &player = gameData.getPlayer();
 		const Double3 &cameraDirection = player.getDirection();
 
-		const Double3 rayStart = player.getPosition();
+		const CoordDouble3 rayStart = player.getPosition();
 		const Double3 rayDirection = [&game, &options, &cameraDirection]()
 		{
 			const auto &renderer = game.getRenderer();
@@ -208,17 +223,28 @@ namespace
 				options.getGraphics_VerticalFOV(), viewAspectRatio);
 		}();
 
-		const auto &worldData = gameData.getWorldData();
+		const auto &worldData = gameData.getActiveWorld();
 		const auto &levelData = worldData.getActiveLevel();
 		const auto &entityManager = levelData.getEntityManager();
 		const auto &voxelGrid = levelData.getVoxelGrid();
+
+		const std::string &paletteFilename = ArenaPaletteName::Default;
+		auto &textureManager = game.getTextureManager();
+		const std::optional<PaletteID> paletteID = textureManager.tryGetPaletteID(paletteFilename.c_str());
+		if (!paletteID.has_value())
+		{
+			DebugCrash("Couldn't get palette ID for \"" + paletteFilename + "\".");
+		}
+
+		const Palette &palette = textureManager.getPaletteHandle(*paletteID);
+
 		const bool includeEntities = true;
 
 		Physics::Hit hit;
 		const bool success = Physics::rayCast(rayStart, rayDirection,
 			options.getMisc_ChunkDistance(), levelData.getCeilingHeight(), cameraDirection,
-			options.getInput_PixelPerfectSelection(), includeEntities, entityManager, voxelGrid,
-			renderer, hit);
+			options.getInput_PixelPerfectSelection(), palette, includeEntities, levelData,
+			game.getEntityDefinitionLibrary(), renderer, hit);
 
 		std::string text;
 		if (success)
@@ -228,33 +254,34 @@ namespace
 			case Physics::Hit::Type::Voxel:
 			{
 				const Physics::Hit::VoxelHit &voxelHit = hit.getVoxelHit();
-				const Int3 &voxel = voxelHit.voxel;
+				const CoordInt3 &coord = voxelHit.coord;
+				const NewInt3 voxel = VoxelUtils::coordToNewVoxel(voxelHit.coord);
 				const uint16_t voxelID = voxelGrid.getVoxel(voxel.x, voxel.y, voxel.z);
 				const VoxelDefinition &voxelDef = voxelGrid.getVoxelDef(voxelID);
 
-				text = "Voxel: (" + voxelHit.voxel.toString() + "), " +
-					std::to_string(static_cast<int>(voxelDef.dataType)) +
+				text = "Voxel: (" + voxel.toString() + "), " +
+					std::to_string(static_cast<int>(voxelDef.type)) +
 					' ' + std::to_string(hit.getT());
 				break;
 			}
 			case Physics::Hit::Type::Entity:
 			{
 				const Physics::Hit::EntityHit &entityHit = hit.getEntityHit();
-				const auto &exeData = game.getMiscAssets().getExeData();
+				const auto &exeData = game.getBinaryAssetLibrary().getExeData();
 
 				// Try inspecting the entity (can be from any distance). If they have a display name,
 				// then show it.
-				const Entity *entity = entityManager.get(entityHit.id);
-				DebugAssert(entity != nullptr);
+				ConstEntityRef entityRef = entityManager.getEntityRef(entityHit.id, entityHit.type);
+				DebugAssert(entityRef.getID() != EntityManager::NO_ID);
 
-				const EntityDefinition *entityDef = entityManager.getEntityDef(entity->getDataIndex());
-				DebugAssert(entityDef != nullptr);
+				const EntityDefinition &entityDef = entityManager.getEntityDef(
+					entityRef.get()->getDefinitionID(), game.getEntityDefinitionLibrary());
+				const auto &charClassLibrary = game.getCharacterClassLibrary();
 
-				const std::string_view entityName = entityDef->getDisplayName();
-
-				if (entityName.size() > 0)
+				std::string entityName;
+				if (EntityUtils::tryGetDisplayName(entityDef, charClassLibrary, &entityName))
 				{
-					text = std::string(entityName);
+					text = std::move(entityName);
 				}
 				else
 				{
@@ -275,16 +302,17 @@ namespace
 			text = "No hit";
 		}
 
+		const auto &fontLibrary = game.getFontLibrary();
 		const RichTextString richText(
 			text,
 			FontName::Arena,
 			Color::White,
 			TextAlignment::Left,
-			game.getFontManager());
+			fontLibrary);
 
-		const TextBox textBox(0, 0, richText, renderer);
-		const int originalX = Renderer::ORIGINAL_WIDTH / 2;
-		const int originalY = (Renderer::ORIGINAL_HEIGHT / 2) + 10;
+		const TextBox textBox(0, 0, richText, fontLibrary, renderer);
+		const int originalX = ArenaRenderUtils::SCREEN_WIDTH / 2;
+		const int originalY = (ArenaRenderUtils::SCREEN_HEIGHT / 2) + 10;
 		renderer.drawOriginal(textBox.getTexture(), originalX, originalY);
 	}
 }
@@ -299,14 +327,15 @@ GameWorldPanel::GameWorldPanel(Game &game)
 		const int x = 17;
 		const int y = 154;
 
+		const auto &fontLibrary = game.getFontLibrary();
 		const RichTextString richText(
 			game.getGameData().getPlayer().getFirstName(),
 			FontName::Char,
 			Color(215, 121, 8),
 			TextAlignment::Left,
-			game.getFontManager());
+			fontLibrary);
 
-		return std::make_unique<TextBox>(x, y, richText, game.getRenderer());
+		return std::make_unique<TextBox>(x, y, richText, fontLibrary, game.getRenderer());
 	}();
 
 	this->characterSheetButton = []()
@@ -347,28 +376,24 @@ GameWorldPanel::GameWorldPanel(Game &game)
 		return Button<>(147, 151, 29, 22, function);
 	}();
 
-	this->statusButton = []()
+	this->statusButton = [this]()
 	{
-		auto function = [](Game &game)
+		auto function = [this](Game &game)
 		{
 			auto &textureManager = game.getTextureManager();
-			auto &renderer = game.getRenderer();
 			const bool modernInterface = game.getOptions().getGraphics_ModernInterface();
 
 			// The center of the pop-up depends on the interface mode.
-			const Int2 center = GameWorldPanel::getInterfaceCenter(
-				modernInterface, textureManager, renderer);
+			const Int2 center = GameWorldPanel::getInterfaceCenter(modernInterface, textureManager);
 
 			const std::string text = [&game]()
 			{
 				auto &gameData = game.getGameData();
-				const auto &miscAssets = game.getMiscAssets();
-				const auto &exeData = miscAssets.getExeData();
-				const Location &location = gameData.getLocation();
-				const LocationDefinition &locationDef =
-					gameData.getLocationDefinition(miscAssets.getWorldMapDefinition());
-				const LocationInstance &locationinst = gameData.getLocationInstance();
-				const std::string &locationName = locationinst.getName(locationDef);
+				const auto &binaryAssetLibrary = game.getBinaryAssetLibrary();
+				const auto &exeData = binaryAssetLibrary.getExeData();
+				const LocationDefinition &locationDef = gameData.getLocationDefinition();
+				const LocationInstance &locationInst = gameData.getLocationInstance();
+				const std::string &locationName = locationInst.getName(locationDef);
 
 				const std::string timeString = [&game, &gameData, &exeData]()
 				{
@@ -384,14 +409,14 @@ GameWorldPanel::GameWorldPanel(Game &game)
 						// uniformly distributed -- midnight and noon are only one minute.
 						const std::array<std::pair<Clock, int>, 8> clocksAndIndices =
 						{
-							std::make_pair(GameData::Midnight, 6),
-							std::make_pair(GameData::Night1, 5),
-							std::make_pair(GameData::EarlyMorning, 0),
-							std::make_pair(GameData::Morning, 1),
-							std::make_pair(GameData::Noon, 2),
-							std::make_pair(GameData::Afternoon, 3),
-							std::make_pair(GameData::Evening, 4),
-							std::make_pair(GameData::Night2, 5)
+							std::make_pair(ArenaClockUtils::Midnight, 6),
+							std::make_pair(ArenaClockUtils::Night1, 5),
+							std::make_pair(ArenaClockUtils::EarlyMorning, 0),
+							std::make_pair(ArenaClockUtils::Morning, 1),
+							std::make_pair(ArenaClockUtils::Noon, 2),
+							std::make_pair(ArenaClockUtils::Afternoon, 3),
+							std::make_pair(ArenaClockUtils::Evening, 4),
+							std::make_pair(ArenaClockUtils::Night2, 5)
 						};
 
 						const Clock &presentClock = gameData.getClock();
@@ -430,8 +455,7 @@ GameWorldPanel::GameWorldPanel(Game &game)
 				baseText.replace(index, 2, timeString);
 
 				// Replace third %s with date string, filled in with each value.
-				std::string dateString = GameData::getDateString(
-					gameData.getDate(), exeData);
+				std::string dateString = DateUtils::getDateString(gameData.getDate(), exeData);
 				dateString.back() = '\n'; // Replace \r with \n.
 
 				index = baseText.find("%s", index);
@@ -477,11 +501,12 @@ GameWorldPanel::GameWorldPanel(Game &game)
 				color,
 				TextAlignment::Center,
 				lineSpacing,
-				game.getFontManager());
+				game.getFontLibrary());
 
 			const Int2 &richTextDimensions = richText.getDimensions();
 
-			Texture texture = Texture::generate(Texture::PatternType::Dark,
+			auto &renderer = game.getRenderer();
+			Texture texture = TextureUtils::generate(TextureUtils::PatternType::Dark,
 				richTextDimensions.x + 12, richTextDimensions.y + 12, textureManager, renderer);
 
 			const Int2 textureCenter = center;
@@ -537,7 +562,7 @@ GameWorldPanel::GameWorldPanel(Game &game)
 	{
 		// Y position is based on height of interface image.
 		const int x = 208;
-		const int y = (Renderer::ORIGINAL_HEIGHT - 53) + 3;
+		const int y = (ArenaRenderUtils::SCREEN_HEIGHT - 53) + 3;
 
 		auto function = [](GameWorldPanel &panel)
 		{
@@ -551,7 +576,7 @@ GameWorldPanel::GameWorldPanel(Game &game)
 	{
 		// Y position is based on height of interface image.
 		const int x = 208;
-		const int y = (Renderer::ORIGINAL_HEIGHT - 53) + 44;
+		const int y = (ArenaRenderUtils::SCREEN_HEIGHT - 53) + 44;
 
 		auto function = [](GameWorldPanel &panel)
 		{
@@ -576,15 +601,12 @@ GameWorldPanel::GameWorldPanel(Game &game)
 			if (goToAutomap)
 			{
 				auto &gameData = game.getGameData();
-				const auto &exeData = game.getMiscAssets().getExeData();
-				const auto &worldData = gameData.getWorldData();
+				const auto &exeData = game.getBinaryAssetLibrary().getExeData();
+				const auto &worldData = gameData.getActiveWorld();
 				const auto &level = worldData.getActiveLevel();
 				const auto &player = gameData.getPlayer();
-				const auto &miscAssets = game.getMiscAssets();
-				const WorldMapDefinition &worldMapDef = miscAssets.getWorldMapDefinition();
-				const LocationDefinition &locationDef = gameData.getLocationDefinition(worldMapDef);
+				const LocationDefinition &locationDef = gameData.getLocationDefinition();
 				const LocationInstance &locationInst = gameData.getLocationInstance();
-				const Double3 &position = player.getPosition();
 
 				// Some places (like named/wild dungeons) do not display a name on the automap.
 				const std::string automapLocationName = [&gameData, &exeData, &locationDef, &locationInst]()
@@ -595,8 +617,8 @@ GameWorldPanel::GameWorldPanel(Game &game)
 					return (isCity || isMainQuestDungeon) ? locationName : std::string();
 				}();
 
-				game.setPanel<AutomapPanel>(game, Double2(position.x, position.z),
-					player.getGroundDirection(), level.getVoxelGrid(), automapLocationName);
+				game.setPanel<AutomapPanel>(game, player.getPosition(), player.getGroundDirection(),
+					level.getVoxelGrid(), level.getTransitions(), automapLocationName);
 			}
 			else
 			{
@@ -668,24 +690,25 @@ GameWorldPanel::~GameWorldPanel()
 	}
 }
 
-Int2 GameWorldPanel::getInterfaceCenter(bool modernInterface, TextureManager &textureManager,
-	Renderer &renderer)
+Int2 GameWorldPanel::getInterfaceCenter(bool modernInterface, TextureManager &textureManager)
 {
 	if (modernInterface)
 	{
-		return Int2(Renderer::ORIGINAL_WIDTH / 2, Renderer::ORIGINAL_HEIGHT / 2);
+		return Int2(ArenaRenderUtils::SCREEN_WIDTH / 2, ArenaRenderUtils::SCREEN_HEIGHT / 2);
 	}
 	else
 	{
-		const auto &gameInterface = textureManager.getTexture(
-			TextureFile::fromName(TextureName::GameWorldInterface), renderer);
-		return Int2(
-			Renderer::ORIGINAL_WIDTH / 2,
-			(Renderer::ORIGINAL_HEIGHT - gameInterface.getHeight()) / 2);
+		const TextureBuilderID gameInterfaceTextureBuilderID =
+			GameWorldPanel::getGameWorldInterfaceTextureBuilderID(textureManager);
+		const TextureBuilder &gameInterfaceTextureBuilder =
+			textureManager.getTextureBuilderHandle(gameInterfaceTextureBuilderID);
+
+		return Int2(ArenaRenderUtils::SCREEN_WIDTH / 2,
+			(ArenaRenderUtils::SCREEN_HEIGHT - gameInterfaceTextureBuilder.getHeight()) / 2);
 	}
 }
 
-Panel::CursorData GameWorldPanel::getCurrentCursor() const
+std::optional<Panel::CursorData> GameWorldPanel::getCurrentCursor() const
 {
 	// The cursor texture depends on the current mouse position.
 	auto &game = this->getGame();
@@ -697,50 +720,155 @@ Panel::CursorData GameWorldPanel::getCurrentCursor() const
 	if (modernInterface)
 	{
 		// Do not show cursor in modern mode.
-		return CursorData(nullptr, CursorAlignment::TopLeft);
+		return std::nullopt;
 	}
 	else
 	{
+		const std::string &paletteFilename = ArenaPaletteName::Default;
+		const std::optional<PaletteID> paletteID = textureManager.tryGetPaletteID(paletteFilename.c_str());
+		if (!paletteID.has_value())
+		{
+			DebugCrash("Couldn't get palette ID for \"" + paletteFilename + "\".");
+		}
+
 		// See which arrow cursor region the native mouse is in.
 		for (int i = 0; i < this->nativeCursorRegions.size(); i++)
 		{
 			if (this->nativeCursorRegions[i].contains(mousePosition))
 			{
-				const auto &texture = textureManager.getTextures(
-					TextureFile::fromName(TextureName::ArrowCursors), renderer).at(i);
-				return CursorData(&texture, ArrowCursorAlignments.at(i));
+				// Get the relevant arrow cursor.
+				const std::string &textureFilename = ArenaTextureName::ArrowCursors;
+				const std::optional<TextureBuilderIdGroup> textureBuilderIDs =
+					textureManager.tryGetTextureBuilderIDs(textureFilename.c_str());
+				if (!textureBuilderIDs.has_value())
+				{
+					DebugCrash("Couldn't get texture builder IDs for \"" + textureFilename + "\".");
+				}
+
+				const TextureBuilderID textureBuilderID = textureBuilderIDs->getID(i);
+				const CursorAlignment cursorAlignment = ArrowCursorAlignments.at(i);
+				return CursorData(textureBuilderID, *paletteID, cursorAlignment);
 			}
 		}
 
-		// If not in any of the arrow regions, use the default sword cursor.
-		const auto &texture = textureManager.getTexture(
-			TextureFile::fromName(TextureName::SwordCursor), renderer);
-		return CursorData(&texture, CursorAlignment::TopLeft);
+		// Not in any of the arrow regions.
+		return this->getDefaultCursor();
 	}
+}
+
+TextureBuilderID GameWorldPanel::getGameWorldInterfaceTextureBuilderID(TextureManager &textureManager)
+{
+	const std::string &textureFilename = ArenaTextureName::GameWorldInterface;
+	const std::optional<TextureBuilderID> textureBuilderID =
+		textureManager.tryGetTextureBuilderID(textureFilename.c_str());
+	if (!textureBuilderID.has_value())
+	{
+		DebugCrash("Couldn't get texture builder ID for \"" + textureFilename + "\".");
+	}
+
+	return *textureBuilderID;
+}
+
+TextureBuilderID GameWorldPanel::getCompassFrameTextureBuilderID() const
+{
+	auto &textureManager = this->getGame().getTextureManager();
+	const std::string &textureFilename = ArenaTextureName::CompassFrame;
+	const std::optional<TextureBuilderID> textureBuilderID =
+		textureManager.tryGetTextureBuilderID(textureFilename.c_str());
+	if (!textureBuilderID.has_value())
+	{
+		DebugCrash("Couldn't get texture builder ID for \"" + textureFilename + "\".");
+	}
+
+	return *textureBuilderID;
+}
+
+TextureBuilderID GameWorldPanel::getCompassSliderTextureBuilderID() const
+{
+	auto &textureManager = this->getGame().getTextureManager();
+	const std::string &textureFilename = ArenaTextureName::CompassSlider;
+	const std::optional<TextureBuilderID> textureBuilderID =
+		textureManager.tryGetTextureBuilderID(textureFilename.c_str());
+	if (!textureBuilderID.has_value())
+	{
+		DebugCrash("Couldn't get texture builder ID for \"" + textureFilename + "\".");
+	}
+
+	return *textureBuilderID;
+}
+
+TextureBuilderID GameWorldPanel::getPlayerPortraitTextureBuilderID(
+	const std::string &portraitsFilename, int portraitID) const
+{
+	auto &textureManager = this->getGame().getTextureManager();
+	const std::optional<TextureBuilderIdGroup> textureBuilderIDs =
+		textureManager.tryGetTextureBuilderIDs(portraitsFilename.c_str());
+	if (!textureBuilderIDs.has_value())
+	{
+		DebugCrash("Couldn't get texture builder IDs for \"" + portraitsFilename + "\".");
+	}
+
+	return textureBuilderIDs->getID(portraitID);
+}
+
+TextureBuilderID GameWorldPanel::getStatusGradientTextureBuilderID(int gradientID) const
+{
+	auto &textureManager = this->getGame().getTextureManager();
+	const std::string &statusGradientsFilename = ArenaTextureName::StatusGradients;
+	const std::optional<TextureBuilderIdGroup> textureBuilderIDs =
+		textureManager.tryGetTextureBuilderIDs(statusGradientsFilename.c_str());
+	if (!textureBuilderIDs.has_value())
+	{
+		DebugCrash("Couldn't get texture builder IDs for \"" + statusGradientsFilename + "\".");
+	}
+
+	return textureBuilderIDs->getID(gradientID);
+}
+
+TextureBuilderID GameWorldPanel::getNoSpellTextureBuilderID() const
+{
+	auto &textureManager = this->getGame().getTextureManager();
+	const std::string &textureFilename = ArenaTextureName::NoSpell;
+	const std::optional<TextureBuilderID> textureBuilderID =
+		textureManager.tryGetTextureBuilderID(textureFilename.c_str());
+	if (!textureBuilderID.has_value())
+	{
+		DebugCrash("Couldn't get texture builder ID for \"" + textureFilename + "\".");
+	}
+
+	return *textureBuilderID;
+}
+
+TextureBuilderID GameWorldPanel::getWeaponTextureBuilderID(const std::string &weaponFilename, int index) const
+{
+	auto &textureManager = this->getGame().getTextureManager();
+	const std::optional<TextureBuilderIdGroup> textureBuilderIDs =
+		textureManager.tryGetTextureBuilderIDs(weaponFilename.c_str());
+	if (!textureBuilderIDs.has_value())
+	{
+		DebugCrash("Couldn't get texture builder IDs for \"" + weaponFilename + "\".");
+	}
+
+	return textureBuilderIDs->getID(index);
 }
 
 void GameWorldPanel::updateCursorRegions(int width, int height)
 {
 	// Scale ratios.
-	const double xScale = static_cast<double>(width) /
-		static_cast<double>(Renderer::ORIGINAL_WIDTH);
-	const double yScale = static_cast<double>(height) /
-		static_cast<double>(Renderer::ORIGINAL_HEIGHT);
+	const double xScale = static_cast<double>(width) / static_cast<double>(ArenaRenderUtils::SCREEN_WIDTH);
+	const double yScale = static_cast<double>(height) / static_cast<double>(ArenaRenderUtils::SCREEN_HEIGHT);
 
 	// Lambda for making a cursor region that scales to the current resolution.
 	auto scaleRect = [xScale, yScale](const Rect &rect)
 	{
-		const int x = static_cast<int>(std::ceil(
-			static_cast<double>(rect.getLeft()) * xScale));
-		const int y = static_cast<int>(std::ceil(
-			static_cast<double>(rect.getTop()) * yScale));
-		const int width = static_cast<int>(std::ceil(
-			static_cast<double>(rect.getWidth()) * xScale));
-		const int height = static_cast<int>(std::ceil(
-			static_cast<double>(rect.getHeight()) * yScale));
-
+		const int x = static_cast<int>(std::ceil(static_cast<double>(rect.getLeft()) * xScale));
+		const int y = static_cast<int>(std::ceil(static_cast<double>(rect.getTop()) * yScale));
+		const int width = static_cast<int>(std::ceil(static_cast<double>(rect.getWidth()) * xScale));
+		const int height = static_cast<int>(std::ceil(static_cast<double>(rect.getHeight()) * yScale));
 		return Rect(x, y, width, height);
 	};
+
+	// @todo: maybe replace this with an index array into the global regions and a std::generate?
 
 	// Top row.
 	this->nativeCursorRegions.at(0) = scaleRect(TopLeftRegion);
@@ -844,8 +972,8 @@ void GameWorldPanel::handleEvent(const SDL_Event &e)
 	{
 		// Refresh player coordinates display (probably intended for debugging in the
 		// original game). These coordinates are in Arena's coordinate system.
-		const auto &exeData = game.getMiscAssets().getExeData();
-		const auto &worldData = game.getGameData().getWorldData();
+		const auto &exeData = game.getBinaryAssetLibrary().getExeData();
+		const auto &worldData = game.getGameData().getActiveWorld();
 
 		const std::string text = [&worldData, &player, &exeData]()
 		{
@@ -854,13 +982,14 @@ void GameWorldPanel::handleEvent(const SDL_Event &e)
 
 			const OriginalInt2 displayedCoords = [&worldData, &player, &voxelGrid]()
 			{
-				const OriginalInt2 originalVoxel = VoxelUtils::newVoxelToOriginalVoxel(
-					NewInt2(player.getVoxelPosition().x, player.getVoxelPosition().z),
-					voxelGrid.getWidth(), voxelGrid.getDepth());
+				const NewDouble3 absolutePlayerPosition = VoxelUtils::coordToNewPoint(player.getPosition());
+				const NewInt3 absolutePlayerVoxel = VoxelUtils::pointToVoxel(absolutePlayerPosition);
+				const NewInt2 playerVoxelXZ(absolutePlayerVoxel.x, absolutePlayerVoxel.z);
+				const OriginalInt2 originalVoxel = VoxelUtils::newVoxelToOriginalVoxel(playerVoxelXZ);
 
 				// The displayed coordinates in the wilderness behave differently in the original
 				// game due to how the 128x128 grid shifts to keep the player roughly centered.
-				if (worldData.getActiveWorldType() != WorldType::Wilderness)
+				if (worldData.getMapType() != MapType::Wilderness)
 				{
 					return originalVoxel;
 				}
@@ -868,7 +997,7 @@ void GameWorldPanel::handleEvent(const SDL_Event &e)
 				{
 					const int halfWidth = RMDFile::WIDTH / 2;
 					const int halfDepth = RMDFile::DEPTH / 2;
-					return Int2(
+					return OriginalInt2(
 						halfWidth + ((originalVoxel.x + halfWidth) % RMDFile::WIDTH),
 						halfDepth + ((originalVoxel.y + halfDepth) % RMDFile::DEPTH));
 				}
@@ -887,7 +1016,7 @@ void GameWorldPanel::handleEvent(const SDL_Event &e)
 		}();
 
 		auto &gameData = game.getGameData();
-		gameData.setActionText(text, game.getFontManager(), game.getRenderer());
+		gameData.setActionText(text, game.getFontLibrary(), game.getRenderer());
 	}
 
 	const bool leftClick = inputManager.mouseButtonPressed(e, SDL_BUTTON_LEFT);
@@ -1157,7 +1286,7 @@ void GameWorldPanel::handlePlayerMovement(double dt)
 	const double walkSpeed = 15.0;
 	const double runSpeed = 30.0;
 
-	const auto &worldData = game.getGameData().getWorldData();
+	const auto &worldData = game.getGameData().getActiveWorld();
 
 	const bool modernInterface = game.getOptions().getGraphics_ModernInterface();
 	if (!modernInterface)
@@ -1435,10 +1564,10 @@ void GameWorldPanel::handlePlayerAttack(const Int2 &mouseDelta)
 				const Double2 mouseDirection = Double2(dxx, -dyy).normalized();
 
 				// Calculate the direction the mouse moved in (let's use cardinal directions
-				// for convenience. Up means north (positive Y), right means east (positive X).
-				// This could be refined in the future).
+				// for convenience. This is actually a little weird now because +X is south
+				// and +Y is west).
 				CardinalDirectionName cardinalDirection = CardinalDirection::getDirectionName(
-					Double2(mouseDirection.y, mouseDirection.x));
+					Double2(-mouseDirection.y, -mouseDirection.x));
 
 				// Set the weapon animation state.
 				if (cardinalDirection == CardinalDirectionName::North)
@@ -1475,7 +1604,7 @@ void GameWorldPanel::handlePlayerAttack(const Int2 &mouseDelta)
 				}
 
 				// Play the swing sound.
-				audioManager.playSound(SoundFile::fromName(SoundName::Swish));
+				audioManager.playSound(ArenaSoundName::Swish);
 			}
 		}
 		else
@@ -1497,13 +1626,13 @@ void GameWorldPanel::handlePlayerAttack(const Int2 &mouseDelta)
 					// the requirements here.
 					auto &textureManager = game.getTextureManager();
 					auto &renderer = game.getRenderer();
-					const auto &gameWorldInterface = textureManager.getTexture(
-						TextureFile::fromName(TextureName::GameWorldInterface), renderer);
-					const int originalCursorY = renderer.nativeToOriginal(
-						inputManager.getMousePosition()).y;
-
+					const TextureBuilderID gameWorldInterfaceTextureID =
+						GameWorldPanel::getGameWorldInterfaceTextureBuilderID(textureManager);
+					const TextureBuilder &gameWorldInterfaceTextureBuilder =
+						textureManager.getTextureBuilderHandle(gameWorldInterfaceTextureID);
+					const int originalCursorY = renderer.nativeToOriginal(inputManager.getMousePosition()).y;
 					return rightClick && (originalCursorY <
-						(Renderer::ORIGINAL_HEIGHT - gameWorldInterface.getHeight()));
+						(ArenaRenderUtils::SCREEN_HEIGHT - gameWorldInterfaceTextureBuilder.getHeight()));
 				}
 				else
 				{
@@ -1518,7 +1647,7 @@ void GameWorldPanel::handlePlayerAttack(const Int2 &mouseDelta)
 				weaponAnimation.setState(WeaponAnimation::State::Firing);
 
 				// Play the firing sound.
-				audioManager.playSound(SoundFile::fromName(SoundName::ArrowFire));
+				audioManager.playSound(ArenaSoundName::ArrowFire);
 			}
 		}
 	}
@@ -1532,14 +1661,14 @@ void GameWorldPanel::handleClickInWorld(const Int2 &nativePoint, bool primaryCli
 	const auto &options = game.getOptions();
 	auto &player = gameData.getPlayer();
 	const Double3 &cameraDirection = player.getDirection();
-	auto &worldData = gameData.getWorldData();
+	auto &worldData = gameData.getActiveWorld();
 	auto &level = worldData.getActiveLevel();
 	auto &voxelGrid = level.getVoxelGrid();
-	auto &entityManager = level.getEntityManager();
+	const auto &entityManager = level.getEntityManager();
 	const double ceilingHeight = level.getCeilingHeight();
 
-	const Double3 rayStart = player.getPosition();
-	const Double3 rayDirection = [&nativePoint, &game, &options, &cameraDirection]()
+	const CoordDouble3 rayStart = player.getPosition();
+	const NewDouble3 rayDirection = [&nativePoint, &game, &options, &cameraDirection]()
 	{
 		const auto &renderer = game.getRenderer();
 		const Int2 windowDims = renderer.getWindowDimensions();
@@ -1564,12 +1693,22 @@ void GameWorldPanel::handleClickInWorld(const Int2 &nativePoint, bool primaryCli
 	// Pixel-perfect selection determines whether an entity's texture is used in the
 	// selection calculation.
 	const bool pixelPerfectSelection = options.getInput_PixelPerfectSelection();
+
+	const std::string &paletteFilename = ArenaPaletteName::Default;
+	auto &textureManager = game.getTextureManager();
+	const std::optional<PaletteID> paletteID = textureManager.tryGetPaletteID(paletteFilename.c_str());
+	if (!paletteID.has_value())
+	{
+		DebugCrash("Couldn't get palette ID for \"" + paletteFilename + "\".");
+	}
+
+	const Palette &palette = textureManager.getPaletteHandle(*paletteID);
 	const bool includeEntities = true;
 
 	Physics::Hit hit;
 	const bool success = Physics::rayCast(rayStart, rayDirection, chunkDistance, ceilingHeight,
-		cameraDirection, pixelPerfectSelection, includeEntities, entityManager, voxelGrid,
-		game.getRenderer(), hit);
+		cameraDirection, pixelPerfectSelection, palette, includeEntities, level,
+		game.getEntityDefinitionLibrary(), game.getRenderer(), hit);
 
 	// See if the ray hit anything.
 	if (success)
@@ -1577,7 +1716,8 @@ void GameWorldPanel::handleClickInWorld(const Int2 &nativePoint, bool primaryCli
 		if (hit.getType() == Physics::Hit::Type::Voxel)
 		{
 			const Physics::Hit::VoxelHit &voxelHit = hit.getVoxelHit();
-			const Int3 &voxel = voxelHit.voxel;
+			const CoordInt3 &coord = voxelHit.coord;
+			const NewInt3 voxel = VoxelUtils::coordToNewVoxel(coord);
 			const uint16_t voxelID = voxelGrid.getVoxel(voxel.x, voxel.y, voxel.z);
 			const VoxelDefinition &voxelDef = voxelGrid.getVoxelDef(voxelID);
 
@@ -1586,52 +1726,48 @@ void GameWorldPanel::handleClickInWorld(const Int2 &nativePoint, bool primaryCli
 			if (primaryClick)
 			{
 				// Arbitrary max distance for selection.
-				const double maxSelectionDist = 1.50;
+				// @todo: move to some ArenaPlayerUtils maybe
+				constexpr double maxSelectionDist = 1.50;
 
 				if (hit.getT() <= maxSelectionDist)
 				{
-					if (voxelDef.dataType == VoxelDataType::Wall ||
-						voxelDef.dataType == VoxelDataType::Floor ||
-						voxelDef.dataType == VoxelDataType::Raised ||
-						voxelDef.dataType == VoxelDataType::Diagonal ||
-						voxelDef.dataType == VoxelDataType::TransparentWall)
+					if (voxelDef.type == ArenaTypes::VoxelType::Wall ||
+						voxelDef.type == ArenaTypes::VoxelType::Floor ||
+						voxelDef.type == ArenaTypes::VoxelType::Raised ||
+						voxelDef.type == ArenaTypes::VoxelType::Diagonal ||
+						voxelDef.type == ArenaTypes::VoxelType::TransparentWall)
 					{
 						if (!debugFadeVoxel)
 						{
-							if (voxelDef.dataType == VoxelDataType::Wall)
+							if (voxelDef.type == ArenaTypes::VoxelType::Wall)
 							{
-								const VoxelDefinition::WallData &wallData = voxelDef.wall;
+								const LevelData::Transitions &transitions = level.getTransitions();
+								const auto transitionIter = transitions.find(NewInt2(voxel.x, voxel.z));
+								const bool isMenu = (transitionIter != transitions.end()) &&
+									(transitionIter->second.getType() == LevelData::Transition::Type::Menu);
 
-								if (wallData.isMenu())
+								if (isMenu)
 								{
-									this->handleWorldTransition(hit, wallData.menuID);
+									const LevelData::Transition::Menu &transitionMenu = transitionIter->second.getMenu();
+									this->handleWorldTransition(hit, transitionMenu.id);
 								}
 							}
 						}
 						else
 						{
 							// @temp: add to fading voxels if it doesn't already exist.
-							LevelData::FadeState fadeState(voxel);
-							auto &fadingVoxels = level.getFadingVoxels();
-
-							const bool exists = [&voxel, fadingVoxels]()
+							const VoxelInstance *existingFadingVoxelInst =
+								level.tryGetVoxelInstance(voxel, VoxelInstance::Type::Fading);
+							const bool isFading = existingFadingVoxelInst != nullptr;
+							if (!isFading)
 							{
-								const auto iter = std::find_if(fadingVoxels.begin(), fadingVoxels.end(),
-									[&voxel](const LevelData::FadeState &state)
-								{
-									return state.getVoxel() == voxel;
-								});
-
-								return iter != fadingVoxels.end();
-							}();
-
-							if (!exists)
-							{
-								fadingVoxels.push_back(std::move(fadeState));
+								VoxelInstance newFadingVoxelInst = VoxelInstance::makeFading(
+									voxel.x, voxel.y, voxel.z, ArenaVoxelUtils::FADING_VOXEL_SECONDS);
+								level.addVoxelInstance(std::move(newFadingVoxelInst));
 							}
 						}
 					}
-					else if (voxelDef.dataType == VoxelDataType::Edge)
+					else if (voxelDef.type == ArenaTypes::VoxelType::Edge)
 					{
 						const VoxelDefinition::EdgeData &edgeData = voxelDef.edge;
 
@@ -1643,40 +1779,42 @@ void GameWorldPanel::handleClickInWorld(const Int2 &nativePoint, bool primaryCli
 							this->handleWorldTransition(hit, menuID);
 						}
 					}
-					else if (voxelDef.dataType == VoxelDataType::Door)
+					else if (voxelDef.type == ArenaTypes::VoxelType::Door)
 					{
 						const VoxelDefinition::DoorData &doorData = voxelDef.door;
-						const Int2 voxelXZ(voxel.x, voxel.z);
 
 						// If the door is closed, then open it.
-						auto &openDoors = level.getOpenDoors();
-						const bool isClosed = [&openDoors, &voxelXZ]()
-						{
-							const auto iter = std::find_if(openDoors.begin(), openDoors.end(),
-								[&voxelXZ](const LevelData::DoorState &openDoor)
-							{
-								return openDoor.getVoxel() == voxelXZ;
-							});
-
-							return iter == openDoors.end();
-						}();
+						const VoxelInstance *existingOpenDoorInst =
+							level.tryGetVoxelInstance(voxel, VoxelInstance::Type::OpenDoor);
+						const bool isClosed = existingOpenDoorInst == nullptr;
 
 						if (isClosed)
 						{
 							// Add the door to the open doors list.
-							openDoors.push_back(LevelData::DoorState(voxelXZ));
+							VoxelInstance newOpenDoorInst = VoxelInstance::makeDoor(
+								voxel.x, voxel.y, voxel.z, ArenaVoxelUtils::DOOR_ANIM_SPEED);
+							level.addVoxelInstance(std::move(newOpenDoorInst));
 
 							// Play the door's opening sound at the center of the voxel.
-							const int soundIndex = doorData.getOpenSoundIndex();
-							const auto &inf = level.getInfFile();
-							const std::string &soundFilename = inf.getSound(soundIndex);
-							auto &audioManager = game.getAudioManager();
-							const Double3 soundPosition(
-								static_cast<double>(voxelXZ.x) + 0.50,
-								level.getCeilingHeight() * 1.50,
-								static_cast<double>(voxelXZ.y) + 0.50);
+							const auto &doorSoundLibrary = game.getDoorSoundLibrary();
+							const std::optional<int> doorSoundDefIndex =
+								doorSoundLibrary.tryGetDefIndex(doorData.type, DoorSoundDefinition::Type::Open);
 
-							audioManager.playSound(soundFilename, soundPosition);
+							if (doorSoundDefIndex.has_value())
+							{
+								const DoorSoundDefinition &doorSoundDef = doorSoundLibrary.getDef(*doorSoundDefIndex);
+								const DoorSoundDefinition::OpenDef &openDoorSoundDef = doorSoundDef.getOpen();
+								const auto &inf = level.getInfFile();
+								auto &audioManager = game.getAudioManager();
+								const std::string &soundFilename = inf.getSound(openDoorSoundDef.soundIndex);
+								const double ceilingHeight = level.getCeilingHeight();
+								const Double3 soundPosition(
+									static_cast<SNDouble>(voxel.x) + 0.50,
+									(static_cast<double>(voxel.y) * ceilingHeight) + (ceilingHeight * 0.50),
+									static_cast<WEDouble>(voxel.z) + 0.50);
+
+								audioManager.playSound(soundFilename, soundPosition);
+							}
 						}
 					}
 				}
@@ -1684,31 +1822,34 @@ void GameWorldPanel::handleClickInWorld(const Int2 &nativePoint, bool primaryCli
 			else
 			{
 				// Handle secondary click (i.e., right click).
-				if (voxelDef.dataType == VoxelDataType::Wall)
+				if (voxelDef.type == ArenaTypes::VoxelType::Wall)
 				{
-					const VoxelDefinition::WallData &wallData = voxelDef.wall;
+					const LevelData::Transitions &transitions = level.getTransitions();
+					const auto transitionIter = transitions.find(NewInt2(voxel.x, voxel.z));
+					const bool isMenu = (transitionIter != transitions.end()) &&
+						(transitionIter->second.getType() == LevelData::Transition::Type::Menu);
+					const bool isInterior = worldData.getMapType() == MapType::Interior;
 
 					// Print interior display name if *MENU block is clicked in an exterior.
-					if (wallData.isMenu() && (worldData.getActiveWorldType() != WorldType::Interior))
+					if (isMenu && !isInterior)
 					{
-						const bool isCity = worldData.getActiveWorldType() == WorldType::City;
-						const auto menuType = VoxelDefinition::WallData::getMenuType(wallData.menuID, isCity);
+						const LevelData::Transition::Menu &transitionMenu = transitionIter->second.getMenu();
+						const MapType mapType = worldData.getMapType();
+						const auto menuType = ArenaVoxelUtils::getMenuType(transitionMenu.id, mapType);
 
-						if (VoxelDefinition::WallData::menuHasDisplayName(menuType))
+						if (ArenaVoxelUtils::menuHasDisplayName(menuType))
 						{
-							const auto &exterior = static_cast<ExteriorLevelData&>(level);
-
 							// Get interior name from the clicked voxel.
-							const std::string menuName = [&game, &voxel, isCity, menuType, &exterior]()
+							const std::string menuName = [&game, &level, &voxel, mapType, menuType]()
 							{
-								const Int2 voxelXZ(voxel.x, voxel.z);
+								const NewInt2 voxelXZ(voxel.x, voxel.z);
 
-								if (isCity)
+								if (mapType == MapType::City)
 								{
 									// City interior name.
-									const auto &menuNames = exterior.getMenuNames();
+									const auto &menuNames = level.getMenuNames();
 									const auto iter = std::find_if(menuNames.begin(), menuNames.end(),
-										[&voxelXZ](const std::pair<Int2, std::string> &pair)
+										[&voxelXZ](const std::pair<NewInt2, std::string> &pair)
 									{
 										return pair.first == voxelXZ;
 									});
@@ -1722,10 +1863,10 @@ void GameWorldPanel::handleClickInWorld(const Int2 &nativePoint, bool primaryCli
 									else
 									{
 										// If no menu name was generated, then see if it's a mage's guild.
-										if (menuType == VoxelDefinition::WallData::MenuType::MagesGuild)
+										if (menuType == ArenaTypes::MenuType::MagesGuild)
 										{
-											const auto &miscAssets = game.getMiscAssets();
-											const auto &exeData = miscAssets.getExeData();
+											const auto &binaryAssetLibrary = game.getBinaryAssetLibrary();
+											const auto &exeData = binaryAssetLibrary.getExeData();
 											return exeData.cityGen.magesGuildMenuName;
 										}
 										else
@@ -1738,7 +1879,7 @@ void GameWorldPanel::handleClickInWorld(const Int2 &nativePoint, bool primaryCli
 										}
 									}
 								}
-								else
+								else if (mapType == MapType::Wilderness)
 								{
 									// Wilderness interior name.
 
@@ -1752,9 +1893,9 @@ void GameWorldPanel::handleClickInWorld(const Int2 &nativePoint, bool primaryCli
 										originalVoxel.x / RMDFile::WIDTH,
 										originalVoxel.y / RMDFile::DEPTH);*/
 
-									const auto &menuNames = exterior.getMenuNames();
+									const auto &menuNames = level.getMenuNames();
 									const auto iter = std::find_if(menuNames.begin(), menuNames.end(),
-										[&voxelXZ](const std::pair<Int2, std::string> &pair)
+										[&voxelXZ](const std::pair<NewInt2, std::string> &pair)
 									{
 										return pair.first == voxelXZ;
 									});
@@ -1774,10 +1915,15 @@ void GameWorldPanel::handleClickInWorld(const Int2 &nativePoint, bool primaryCli
 										return std::string();
 									}
 								}
+								else
+								{
+									DebugUnhandledReturnMsg(std::string,
+										std::to_string(static_cast<int>(mapType)));
+								}
 							}();
 
 							auto &gameData = game.getGameData();
-							gameData.setActionText(menuName, game.getFontManager(), game.getRenderer());
+							gameData.setActionText(menuName, game.getFontLibrary(), game.getRenderer());
 						}
 					}
 				}
@@ -1786,7 +1932,7 @@ void GameWorldPanel::handleClickInWorld(const Int2 &nativePoint, bool primaryCli
 		else if (hit.getType() == Physics::Hit::Type::Entity)
 		{
 			const Physics::Hit::EntityHit &entityHit = hit.getEntityHit();
-			const auto &exeData = game.getMiscAssets().getExeData();
+			const auto &exeData = game.getBinaryAssetLibrary().getExeData();
 
 			if (primaryClick)
 			{
@@ -1802,30 +1948,31 @@ void GameWorldPanel::handleClickInWorld(const Int2 &nativePoint, bool primaryCli
 
 				// Try inspecting the entity (can be from any distance). If they have a display name,
 				// then show it.
-				const Entity *entity = entityManager.get(entityHit.id);
-				DebugAssert(entity != nullptr);
+				ConstEntityRef entityRef = entityManager.getEntityRef(entityHit.id, entityHit.type);
+				DebugAssert(entityRef.getID() != EntityManager::NO_ID);
 
-				const EntityDefinition *entityDef = entityManager.getEntityDef(entity->getDataIndex());
-				DebugAssert(entityDef != nullptr);
+				const EntityDefinition &entityDef = entityManager.getEntityDef(
+					entityRef.get()->getDefinitionID(), game.getEntityDefinitionLibrary());
+				const auto &charClassLibrary = game.getCharacterClassLibrary();
 
-				const std::string_view entityName = entityDef->getDisplayName();
-
+				std::string entityName;
 				std::string text;
-				if (entityName.size() > 0)
+				if (EntityUtils::tryGetDisplayName(entityDef, charClassLibrary, &entityName))
 				{
 					text = exeData.ui.inspectedEntityName;
 
 					// Replace format specifier with entity name.
-					text = String::replace(text, "%s", std::string(entityName));
+					text = String::replace(text, "%s", entityName);
 				}
 				else
 				{
 					// Placeholder text for testing.
-					text = "Entity " + std::to_string(entityHit.id);
+					text = "Entity " + std::to_string(entityHit.id) + " (" +
+						EntityUtils::defTypeToString(entityDef) + ")";
 				}
 
 				auto &gameData = game.getGameData();
-				gameData.setActionText(text, game.getFontManager(), game.getRenderer());
+				gameData.setActionText(text, game.getFontLibrary(), game.getRenderer());
 			}
 		}
 		else
@@ -1840,9 +1987,10 @@ void GameWorldPanel::handleNightLightChange(bool active)
 	auto &game = this->getGame();
 	auto &renderer = game.getRenderer();
 	auto &gameData = game.getGameData();
-	auto &worldData = gameData.getWorldData();
+	auto &worldData = gameData.getActiveWorld();
 	auto &levelData = worldData.getActiveLevel();
 	auto &entityManager = levelData.getEntityManager();
+	const auto &entityDefLibrary = game.getEntityDefinitionLibrary();
 
 	// Turn streetlights on or off.
 	Buffer<Entity*> entityBuffer(entityManager.getCount(EntityType::Static));
@@ -1852,35 +2000,49 @@ void GameWorldPanel::handleNightLightChange(bool active)
 	for (int i = 0; i < entityCount; i++)
 	{
 		Entity *entity = entityBuffer.get(i);
-		const int dataIndex = entity->getDataIndex();
-		const EntityDefinition *entityDef = entityManager.getEntityDef(dataIndex);
-		if (entityDef == nullptr)
-		{
-			DebugLogError("Missing entity definition " + std::to_string(dataIndex) + ".");
-			continue;
-		}
+		const EntityDefID defID = entity->getDefinitionID();
+		const EntityDefinition &entityDef = entityManager.getEntityDef(defID, entityDefLibrary);
 
-		if (entityDef->isOther() && entityDef->getInfData().streetLight)
+		if ((entityDef.getType() == EntityDefinition::Type::Doodad) &&
+			(entityDef.getDoodad().streetlight))
 		{
-			auto &entityAnim = entity->getAnimation();
-			const EntityAnimationData::StateType newStateType = active ?
-				EntityAnimationData::StateType::Activated : EntityAnimationData::StateType::Idle;
-			entityAnim.setStateType(newStateType);
+			const std::string &newStateName = active ?
+				EntityAnimationUtils::STATE_ACTIVATED : EntityAnimationUtils::STATE_IDLE;
+
+			const EntityAnimationDefinition &animDef = entityDef.getAnimDef();
+			int newStateIndex;
+			if (!animDef.tryGetStateIndex(newStateName.c_str(), &newStateIndex))
+			{
+				DebugLogWarning("Missing entity animation state \"" + newStateName + "\".");
+				continue;
+			}
+
+			EntityAnimationInstance &animInst = entity->getAnimInstance();
+			animInst.setStateIndex(newStateIndex);
 		}
 	}
 
-	renderer.setNightLightsActive(active);
+	TextureManager &textureManager = game.getTextureManager();
+	const std::string paletteName = ArenaPaletteName::Default;
+	const std::optional<PaletteID> paletteID = textureManager.tryGetPaletteID(paletteName.c_str());
+	if (!paletteID.has_value())
+	{
+		DebugCrash("Couldn't get palette \"" + paletteName + "\".");
+	}
+
+	const Palette &palette = textureManager.getPaletteHandle(*paletteID);
+	renderer.setNightLightsActive(active, palette);
 }
 
-void GameWorldPanel::handleTriggers(const Int2 &voxel)
+void GameWorldPanel::handleTriggers(const NewInt2 &voxel)
 {
 	auto &game = this->getGame();
-	auto &worldData = game.getGameData().getWorldData();
+	auto &worldData = game.getGameData().getActiveWorld();
 
 	// Only interior levels have triggers.
-	if (worldData.getActiveWorldType() == WorldType::Interior)
+	if (worldData.getMapType() == MapType::Interior)
 	{
-		auto &level = static_cast<InteriorLevelData&>(worldData.getActiveLevel());
+		auto &level = worldData.getActiveLevel();
 
 		// See if there's a text trigger.
 		LevelData::TextTrigger *textTrigger = level.getTextTrigger(voxel);
@@ -1898,7 +2060,7 @@ void GameWorldPanel::handleTriggers(const Int2 &voxel)
 					0, textTrigger->getText().size() - 1);
 
 				auto &gameData = game.getGameData();
-				gameData.setTriggerText(text, game.getFontManager(), game.getRenderer());
+				gameData.setTriggerText(text, game.getFontLibrary(), game.getRenderer());
 
 				// Set the text trigger as activated (regardless of whether or not it's
 				// single-shot, just for consistency).
@@ -1921,76 +2083,110 @@ void GameWorldPanel::handleDoors(double dt, const Double2 &playerPos)
 {
 	auto &game = this->getGame();
 	auto &gameData = game.getGameData();
-	auto &worldData = gameData.getWorldData();
+	auto &worldData = gameData.getActiveWorld();
 	auto &activeLevel = worldData.getActiveLevel();
-	auto &openDoors = activeLevel.getOpenDoors();
-	const auto &voxelGrid = activeLevel.getVoxelGrid();
 
 	// Lambda for playing a sound by .INF sound index if the close sound types match.
-	auto playSoundIfType = [&game, &activeLevel](
-		const VoxelDefinition::DoorData::CloseSoundData &closeSoundData,
-		VoxelDefinition::DoorData::CloseSoundType closeSoundType, const Int2 &doorVoxel)
+	auto playCloseSoundIfType = [&game, &activeLevel](const DoorSoundDefinition::CloseDef &closeSoundDef, 
+		DoorSoundDefinition::CloseType closeType, const NewInt3 &doorVoxel)
 	{
-		if (closeSoundData.type == closeSoundType)
+		if (closeSoundDef.closeType == closeType)
 		{
 			const auto &inf = activeLevel.getInfFile();
-			const std::string &soundFilename = inf.getSound(closeSoundData.soundIndex);
+			const std::string &soundFilename = inf.getSound(closeSoundDef.soundIndex);
 			auto &audioManager = game.getAudioManager();
 
 			// Put at the center of the door voxel.
+			const double ceilingHeight = activeLevel.getCeilingHeight();
 			const Double3 soundPosition(
-				static_cast<double>(doorVoxel.x) + 0.50,
-				activeLevel.getCeilingHeight() * 1.50,
-				static_cast<double>(doorVoxel.y) + 0.50);
+				static_cast<SNDouble>(doorVoxel.x) + 0.50,
+				(static_cast<double>(doorVoxel.y) * ceilingHeight) + (ceilingHeight * 0.50),
+				static_cast<WEDouble>(doorVoxel.z) + 0.50);
 
 			audioManager.playSound(soundFilename, soundPosition);
 		}
 	};
 
-	// Update each open door and remove ones that become closed. A reverse iterator loop
-	// was causing increment issues after erasing.
-	for (int i = static_cast<int>(openDoors.size()) - 1; i >= 0; i--)
+	const ChunkInt2 playerChunk = VoxelUtils::newVoxelToChunk(
+		NewInt2(static_cast<SNInt>(playerPos.x), static_cast<WEInt>(playerPos.y)));
+	const int chunkDistance = game.getOptions().getMisc_ChunkDistance();
+	ChunkInt2 minChunk, maxChunk;
+	ChunkUtils::getSurroundingChunks(playerChunk, chunkDistance, &minChunk, &maxChunk);
+
+	// Iterate over chunks near the player.
+	for (SNInt chunkX = minChunk.x; chunkX <= maxChunk.x; chunkX++)
 	{
-		auto &door = openDoors.at(i);
-		door.update(dt);
-
-		// Get the door's voxel data and its close sound data for determining how it plays
-		// sounds when closing.
-		const Int2 &voxel = door.getVoxel();
-		const uint16_t voxelID = voxelGrid.getVoxel(voxel.x, 1, voxel.y);
-		const VoxelDefinition &voxelDef = voxelGrid.getVoxelDef(voxelID);
-		const VoxelDefinition::DoorData &doorData = voxelDef.door;
-		const auto closeSoundData = doorData.getCloseSoundData();
-
-		if (door.isClosed())
+		for (WEInt chunkZ = minChunk.y; chunkZ <= maxChunk.y; chunkZ++)
 		{
-			// Only some doors play a sound when they become closed.
-			playSoundIfType(closeSoundData, VoxelDefinition::DoorData::CloseSoundType::OnClosed, voxel);
-
-			// Erase closed door.
-			openDoors.erase(openDoors.begin() + i);
-		}
-		else if (!door.isClosing())
-		{
-			// Auto-close doors that the player is far enough away from.
-			const bool farEnough = [&playerPos, &voxel]()
+			const ChunkInt2 chunk(chunkX, chunkZ);
+			LevelData::VoxelInstanceGroup *voxelInstGroup = activeLevel.tryGetVoxelInstances(chunk);
+			if (voxelInstGroup != nullptr)
 			{
-				const double maxDistance = 3.0; // @todo: arbitrary value.
-				const double maxDistanceSqr = maxDistance * maxDistance;
-				const Double2 diff(
-					playerPos.x - (static_cast<double>(voxel.x) + 0.50),
-					playerPos.y - (static_cast<double>(voxel.y) + 0.50));
-				const double distSqr = (diff.x * diff.x) + (diff.y * diff.y);
-				return distSqr > maxDistanceSqr;
-			}();
+				for (auto &pair : *voxelInstGroup)
+				{
+					std::vector<VoxelInstance> &voxelInsts = pair.second;
 
-			if (farEnough)
-			{
-				door.setDirection(LevelData::DoorState::Direction::Closing);
+					// Update each open door and remove ones that become closed.
+					for (int i = static_cast<int>(voxelInsts.size()) - 1; i >= 0; i--)
+					{
+						VoxelInstance &voxelInst = voxelInsts[i];
+						if (voxelInst.getType() == VoxelInstance::Type::OpenDoor)
+						{
+							voxelInst.update(dt);
 
-				// Only some doors play a sound when they start closing.
-				playSoundIfType(closeSoundData,
-					VoxelDefinition::DoorData::CloseSoundType::OnClosing, voxel);
+							// Get the door's voxel definition and its sound definition for determining how it
+							// sounds when closing.
+							const auto &voxelGrid = activeLevel.getVoxelGrid();
+							const NewInt3 voxel(voxelInst.getX(), voxelInst.getY(), voxelInst.getZ());
+							const uint16_t voxelID = voxelGrid.getVoxel(voxel.x, voxel.y, voxel.z);
+							const VoxelDefinition &voxelDef = voxelGrid.getVoxelDef(voxelID);
+							const VoxelDefinition::DoorData &doorData = voxelDef.door;
+
+							const auto &doorSoundLibrary = game.getDoorSoundLibrary();
+							const std::optional<int> doorSoundDefIndex =
+								doorSoundLibrary.tryGetDefIndex(doorData.type, DoorSoundDefinition::Type::Close);
+							const DoorSoundDefinition *doorSoundDef = doorSoundDefIndex.has_value() ?
+								&doorSoundLibrary.getDef(*doorSoundDefIndex) : nullptr;
+
+							VoxelInstance::DoorState &doorState = voxelInst.getDoorState();
+							const VoxelInstance::DoorState::StateType doorStateType = doorState.getStateType();
+							if (doorStateType == VoxelInstance::DoorState::StateType::Closed)
+							{
+								if (doorSoundDef != nullptr)
+								{
+									// Only some doors play a sound when they become closed.
+									playCloseSoundIfType(doorSoundDef->getClose(), DoorSoundDefinition::CloseType::OnClosed, voxel);
+								}
+
+								// Erase closed door.
+								voxelInsts.erase(voxelInsts.begin() + i);
+							}
+							else if (doorStateType != VoxelInstance::DoorState::StateType::Closing)
+							{
+								// Auto-close doors that the player is far enough away from.
+								const bool farEnough = [&playerPos, &voxel]()
+								{
+									constexpr double maxDistance = ArenaLevelUtils::DOOR_CLOSE_DISTANCE;
+									constexpr double maxDistanceSqr = maxDistance * maxDistance;
+									const Double2 diff = playerPos - VoxelUtils::getVoxelCenter(NewInt2(voxel.x, voxel.z));
+									const double distSqr = (diff.x * diff.x) + (diff.y * diff.y);
+									return distSqr > maxDistanceSqr;
+								}();
+
+								if (farEnough)
+								{
+									doorState.setStateType(VoxelInstance::DoorState::StateType::Closing);
+
+									if (doorSoundDef != nullptr)
+									{
+										// Only some doors play a sound when they start closing.
+										playCloseSoundIfType(doorSoundDef->getClose(), DoorSoundDefinition::CloseType::OnClosing, voxel);
+									}
+								}
+							}
+						}
+					}
+				}
 			}
 		}
 	}
@@ -2006,116 +2202,159 @@ void GameWorldPanel::handleWorldTransition(const Physics::Hit &hit, int menuID)
 	auto &gameData = game.getGameData();
 	auto &textureManager = game.getTextureManager();
 	auto &renderer = game.getRenderer();
-	auto &worldData = gameData.getWorldData();
+	auto &worldData = gameData.getActiveWorld();
 	auto &activeLevel = worldData.getActiveLevel();
-	const WorldType activeWorldType = worldData.getActiveWorldType();
+	const MapType activeMapType = worldData.getMapType();
+
+	const LocationDefinition &locationDef = gameData.getLocationDefinition();
+	DebugAssert(locationDef.getType() == LocationDefinition::Type::City);
+	const LocationDefinition::CityDefinition &cityDef = locationDef.getCityDefinition();
 
 	// Decide based on the active world type.
-	if (activeWorldType == WorldType::Interior)
+	if (activeMapType == MapType::Interior)
 	{
 		// @temp: temporary condition while test interiors are allowed on the main menu.
-		if (worldData.getBaseWorldType() == WorldType::Interior)
+		if (!gameData.isActiveWorldNested())
 		{
 			DebugLogWarning("Test interiors have no exterior.");
 			return;
 		}
 
 		// Leave the interior and go to the saved exterior.
-		const auto &miscAssets = game.getMiscAssets();
-		gameData.leaveInterior(miscAssets, textureManager, renderer);
+		const auto &binaryAssetLibrary = game.getBinaryAssetLibrary();
+		gameData.leaveInterior(game.getEntityDefinitionLibrary(), game.getCharacterClassLibrary(),
+			binaryAssetLibrary, game.getRandom(), textureManager, renderer);
 
 		// Change to exterior music.
 		const auto &clock = gameData.getClock();
-		const auto &location = gameData.getLocation();
-		const ClimateType climateType = LocationUtils::getCityClimateType(
-			location.localCityID, location.provinceID, miscAssets);
 		const WeatherType filteredWeatherType = WeatherUtils::getFilteredWeatherType(
-			gameData.getWeatherType(), climateType);
-		const MusicName musicName = !gameData.nightMusicIsActive() ?
-			MusicUtils::getExteriorMusicName(filteredWeatherType) :
-			MusicName::Night;
+			gameData.getWeatherType(), cityDef.climateType);
 
-		game.setMusic(musicName);
+		const MusicLibrary &musicLibrary = game.getMusicLibrary();
+		const MusicDefinition *musicDef = [&game, &gameData, filteredWeatherType, &musicLibrary]()
+		{
+			if (!gameData.nightMusicIsActive())
+			{
+				return musicLibrary.getRandomMusicDefinitionIf(MusicDefinition::Type::Weather,
+					game.getRandom(), [filteredWeatherType](const MusicDefinition &def)
+				{
+					DebugAssert(def.getType() == MusicDefinition::Type::Weather);
+					const auto &weatherMusicDef = def.getWeatherMusicDefinition();
+					return weatherMusicDef.type == filteredWeatherType;
+				});
+			}
+			else
+			{
+				return musicLibrary.getRandomMusicDefinition(
+					MusicDefinition::Type::Night, game.getRandom());
+			}
+		}();
+
+		if (musicDef == nullptr)
+		{
+			DebugLogWarning("Missing exterior music.");
+		}
+
+		// Only play jingle if the exterior is inside the city.
+		const MusicDefinition *jingleMusicDef = nullptr;
+		if (gameData.getActiveWorld().getMapType() == MapType::City)
+		{
+			jingleMusicDef = musicLibrary.getRandomMusicDefinitionIf(MusicDefinition::Type::Jingle,
+				game.getRandom(), [&cityDef](const MusicDefinition &def)
+			{
+				DebugAssert(def.getType() == MusicDefinition::Type::Jingle);
+				const auto &jingleMusicDef = def.getJingleMusicDefinition();
+				return (jingleMusicDef.cityType == cityDef.type) &&
+					(jingleMusicDef.climateType == cityDef.climateType);
+			});
+
+			if (jingleMusicDef == nullptr)
+			{
+				DebugLogWarning("Missing jingle music.");
+			}
+		}
+
+		AudioManager &audioManager = game.getAudioManager();
+		audioManager.setMusic(musicDef, jingleMusicDef);
 	}
 	else
 	{
 		// Either city or wilderness. If the menu ID is for an interior, enter it. If it's
 		// the city gates, toggle between city and wilderness. If it's "none", then do nothing.
-		const bool isCity = activeWorldType == WorldType::City;
-		const VoxelDefinition::WallData::MenuType menuType =
-			VoxelDefinition::WallData::getMenuType(menuID, isCity);
-		const bool isTransitionVoxel = menuType != VoxelDefinition::WallData::MenuType::None;
+		const ArenaTypes::MenuType menuType = ArenaVoxelUtils::getMenuType(menuID, activeMapType);
+		const bool isTransitionVoxel = menuType != ArenaTypes::MenuType::None;
 
 		// Make sure the voxel will actually lead somewhere first.
 		if (isTransitionVoxel)
 		{
-			auto &voxelGrid = activeLevel.getVoxelGrid();
-			const NewInt2 voxel(voxelHit.voxel.x, voxelHit.voxel.z);
-			const bool isTransitionToInterior = VoxelDefinition::WallData::menuLeadsToInterior(menuType);
+			const bool isTransitionToInterior = ArenaVoxelUtils::menuLeadsToInterior(menuType);
+			const CoordInt3 &coord = voxelHit.coord;
+			const NewInt3 hitVoxel = VoxelUtils::coordToNewVoxel(coord);
 
 			if (isTransitionToInterior)
 			{
-				const OriginalInt2 originalVoxel = VoxelUtils::newVoxelToOriginalVoxel(
-					voxel, voxelGrid.getWidth(), voxelGrid.getDepth());
-
-				const OriginalInt2 doorVoxel = [isCity, &originalVoxel]()
+				const NewInt2 voxelXZ(hitVoxel.x, hitVoxel.z);
+				const OriginalInt2 originalVoxel = VoxelUtils::newVoxelToOriginalVoxel(voxelXZ);
+				const OriginalInt2 doorVoxel = [activeMapType, &originalVoxel]()
 				{
-					if (isCity)
+					if (activeMapType == MapType::City)
 					{
 						return originalVoxel;
 					}
-					else
+					else if (activeMapType == MapType::Wilderness)
 					{
 						// Get the door voxel using the relative wilderness origin near the player
 						// as the reference.
-						const OriginalInt2 relativeOrigin = ExteriorLevelData::getRelativeWildOrigin(originalVoxel);
+						const OriginalInt2 relativeOrigin = ArenaWildUtils::getRelativeWildOrigin(originalVoxel);
 						const OriginalInt2 relativeVoxel = originalVoxel - relativeOrigin;
 						return relativeVoxel;
 					}
+					else
+					{
+						DebugUnhandledReturnMsg(OriginalInt2, std::to_string(static_cast<int>(activeMapType)));
+					}
 				}();
 
-				const auto &miscAssets = game.getMiscAssets();
-				const auto &cityData = miscAssets.getCityDataFile();
-				const Location &location = gameData.getLocation();
-				const auto &province = cityData.getProvinceData(location.provinceID);
-				const auto &exeData = miscAssets.getExeData();
-				const std::string mifName = LevelUtils::getDoorVoxelMifName(doorVoxel.x, doorVoxel.y,
-					menuID, location.localCityID, location.provinceID, province, isCity, exeData);
+				const auto &binaryAssetLibrary = game.getBinaryAssetLibrary();
+				const auto &exeData = binaryAssetLibrary.getExeData();
+				const std::string mifName = ArenaLevelUtils::getDoorVoxelMifName(doorVoxel.x, doorVoxel.y,
+					menuID, cityDef.rulerSeed, cityDef.palaceIsMainQuestDungeon, cityDef.type,
+					activeMapType, exeData);
 
 				// @todo: the return data needs to include chunk coordinates when in the
 				// wilderness. Maybe make that a discriminated union: "city return" and
 				// "wild return".
-				const Int3 returnVoxel = [&voxelHit]()
+				const NewInt3 returnVoxel = [&voxelHit, &hitVoxel]()
 				{
-					const Int3 delta = [&voxelHit]()
+					const NewInt3 delta = [&voxelHit, &hitVoxel]()
 					{
 						// Assuming this is a wall voxel.
 						DebugAssert(voxelHit.facing.has_value());
-						const VoxelFacing facing = *voxelHit.facing;
+						const VoxelFacing3D facing = *voxelHit.facing;
 
-						if (facing == VoxelFacing::PositiveX)
+						if (facing == VoxelFacing3D::PositiveX)
 						{
-							return Int3(1, 0, 0);
+							return NewInt3(1, 0, 0);
 						}
-						else if (facing == VoxelFacing::NegativeX)
+						else if (facing == VoxelFacing3D::NegativeX)
 						{
-							return Int3(-1, 0, 0);
+							return NewInt3(-1, 0, 0);
 						}
-						else if (facing == VoxelFacing::PositiveZ)
+						else if (facing == VoxelFacing3D::PositiveZ)
 						{
-							return Int3(0, 0, 1);
+							return NewInt3(0, 0, 1);
 						}
-						else if (facing == VoxelFacing::NegativeZ)
+						else if (facing == VoxelFacing3D::NegativeZ)
 						{
-							return Int3(0, 0, -1);
+							return NewInt3(0, 0, -1);
 						}
 						else
 						{
-							DebugUnhandledReturnMsg(Int3, std::to_string(static_cast<int>(facing)));
+							DebugUnhandledReturnMsg(NewInt3, std::to_string(static_cast<int>(facing)));
 						}
 					}();
 
-					return voxelHit.voxel + delta;
+					return hitVoxel + delta;
 				}();
 
 				// Enter the interior location if the .MIF name is valid.
@@ -2128,121 +2367,189 @@ void GameWorldPanel::handleWorldTransition(const Physics::Hit &hit, int menuID)
 						DebugCrash("Could not init .MIF file \"" + mifName + "\".");
 					}
 
-					gameData.enterInterior(menuType, mif, NewInt2(returnVoxel.x, returnVoxel.z),
-						miscAssets, game.getTextureManager(), game.getRenderer());
+					const std::optional<ArenaTypes::InteriorType> interiorType =
+						ArenaInteriorUtils::menuTypeToInteriorType(menuType);
+					DebugAssert(interiorType.has_value());
+					gameData.enterInterior(*interiorType, mif, NewInt2(returnVoxel.x, returnVoxel.z),
+						game.getEntityDefinitionLibrary(), game.getCharacterClassLibrary(),
+						binaryAssetLibrary, game.getRandom(), game.getTextureManager(),
+						game.getRenderer());
 
 					// Change to interior music.
-					Random random;
-					const MusicName musicName = MusicUtils::getInteriorMusicName(mifName, random);
-					game.setMusic(musicName);
+					const MusicLibrary &musicLibrary = game.getMusicLibrary();
+					const MusicDefinition *musicDef = nullptr;
+					MusicDefinition::InteriorMusicDefinition::Type interiorMusicType;
+					if (MusicUtils::tryGetInteriorMusicType(mifName, &interiorMusicType))
+					{
+						// Non-dungeon interior.
+						musicDef = musicLibrary.getRandomMusicDefinitionIf(MusicDefinition::Type::Interior,
+							game.getRandom(), [interiorMusicType](const MusicDefinition &def)
+						{
+							DebugAssert(def.getType() == MusicDefinition::Type::Interior);
+							const auto &interiorMusicDef = def.getInteriorMusicDefinition();
+							return interiorMusicDef.type == interiorMusicType;
+						});
+					}
+					else
+					{
+						// Dungeon.
+						musicDef = musicLibrary.getRandomMusicDefinition(
+							MusicDefinition::Type::Dungeon, game.getRandom());
+					}
+
+					if (musicDef == nullptr)
+					{
+						DebugLogWarning("Missing interior music.");
+					}
+
+					AudioManager &audioManager = game.getAudioManager();
+					audioManager.setMusic(musicDef);
 				}
 				else
 				{
 					// @todo: handle wilderness dungeon .MIF names differently than just with
 					// an empty string?
-					DebugLogWarning("Empty .MIF name at voxel (" + std::to_string(voxel.x) + ", " +
-						std::to_string(voxel.y) + ").");
+					DebugLogWarning("Empty .MIF name at voxel (" + std::to_string(voxelXZ.x) + ", " +
+						std::to_string(voxelXZ.y) + ").");
 				}
 			}
 			else
 			{
 				// City gate transition.
-				const auto &miscAssets = game.getMiscAssets();
-				const auto &location = gameData.getLocation();
-				const WorldMapDefinition &worldMapDef = miscAssets.getWorldMapDefinition();
-				const ProvinceDefinition &provinceDef = worldMapDef.getProvinceDef(location.provinceID);
-				const LocationDefinition &locationDef = gameData.getLocationDefinition(worldMapDef);
-				const int starCount = DistantSky::getStarCountFromDensity(
+				const auto &binaryAssetLibrary = game.getBinaryAssetLibrary();
+				const ProvinceDefinition &provinceDef = gameData.getProvinceDefinition();
+				const LocationDefinition &locationDef = gameData.getLocationDefinition();
+				const int starCount = SkyUtils::getStarCountFromDensity(
 					game.getOptions().getMisc_StarDensity());
 
-				if (isCity)
+				if (activeMapType == MapType::City)
 				{
 					// From city to wilderness. Use the gate position to determine where to put the
 					// player in the wilderness.
-					const NewInt2 gatePos(voxelHit.voxel.x, voxelHit.voxel.z);
-					const Int2 transitionDir = [&voxelHit]()
+					const NewInt2 gatePos(hitVoxel.x, hitVoxel.z);
+					const NewInt2 transitionDir = [&voxelHit]()
 					{
 						// Assuming this is a wall voxel.
 						DebugAssert(voxelHit.facing.has_value());
-						const VoxelFacing facing = *voxelHit.facing;
+						const VoxelFacing3D facing = *voxelHit.facing;
 
-						if (facing == VoxelFacing::PositiveX)
+						if (facing == VoxelFacing3D::PositiveX)
 						{
-							return Int2(-1, 0);
+							return VoxelUtils::North;
 						}
-						else if (facing == VoxelFacing::NegativeX)
+						else if (facing == VoxelFacing3D::NegativeX)
 						{
-							return Int2(1, 0);
+							return VoxelUtils::South;
 						}
-						else if (facing == VoxelFacing::PositiveZ)
+						else if (facing == VoxelFacing3D::PositiveZ)
 						{
-							return Int2(0, -1);
+							return VoxelUtils::East;
 						}
-						else if (facing == VoxelFacing::NegativeZ)
+						else if (facing == VoxelFacing3D::NegativeZ)
 						{
-							return Int2(0, 1);
+							return VoxelUtils::West;
 						}
 						else
 						{
-							DebugUnhandledReturnMsg(Int2, std::to_string(static_cast<int>(facing)));
+							DebugUnhandledReturnMsg(NewInt2, std::to_string(static_cast<int>(facing)));
 						}
 					}();
 
-					const OriginalInt2 originalGateVoxel = VoxelUtils::newVoxelToOriginalVoxel(
-						gatePos, voxelGrid.getWidth(), voxelGrid.getDepth());
-
 					const bool ignoreGatePos = false;
-					gameData.loadWilderness(location.localCityID, location.provinceID, locationDef,
-						provinceDef, originalGateVoxel, transitionDir, ignoreGatePos,
-						gameData.getWeatherType(), starCount, miscAssets, textureManager, renderer);
+					if (!gameData.loadWilderness(locationDef, provinceDef, gatePos, transitionDir,
+						ignoreGatePos, gameData.getWeatherType(), starCount,
+						game.getEntityDefinitionLibrary(), game.getCharacterClassLibrary(),
+						binaryAssetLibrary, game.getRandom(), textureManager, renderer))
+					{
+						DebugCrash("Couldn't load wilderness \"" + locationDef.getName() + "\".");
+					}
+				}
+				else if (activeMapType == MapType::Wilderness)
+				{
+					// From wilderness to city.
+					if (!gameData.loadCity(locationDef, provinceDef, gameData.getWeatherType(),
+						starCount, game.getEntityDefinitionLibrary(), game.getCharacterClassLibrary(),
+						binaryAssetLibrary, game.getTextAssetLibrary(), game.getRandom(), textureManager,
+						renderer))
+					{
+						DebugCrash("Couldn't load city \"" + locationDef.getName() + "\".");
+					}
 				}
 				else
 				{
-					// From wilderness to city.
-					gameData.loadCity(location.localCityID, location.provinceID, locationDef,
-						provinceDef, gameData.getWeatherType(), starCount, miscAssets,
-						textureManager, renderer);
+					DebugLogError("World type \"" + std::to_string(static_cast<int>(activeMapType)) +
+						"\" does not support city gate transitions.");
+					return;
 				}
 
 				// Reset the current music (even if it's the same one).
-				const MusicName musicName = [&game, &gameData, &location]()
+				const MusicLibrary &musicLibrary = game.getMusicLibrary();
+				const MusicDefinition *musicDef = [&game, &gameData, &locationDef, &musicLibrary]()
 				{
-					const ClimateType climateType = LocationUtils::getCityClimateType(
-						location.localCityID, location.provinceID, game.getMiscAssets());
+					const LocationDefinition::CityDefinition &cityDef = locationDef.getCityDefinition();
+					const ClimateType climateType = cityDef.climateType;
 					const WeatherType filteredWeatherType = WeatherUtils::getFilteredWeatherType(
 						gameData.getWeatherType(), climateType);
-					return !gameData.nightMusicIsActive() ?
-						MusicUtils::getExteriorMusicName(filteredWeatherType) : MusicName::Night;
+
+					if (!gameData.nightMusicIsActive())
+					{
+						return musicLibrary.getRandomMusicDefinitionIf(MusicDefinition::Type::Weather,
+							game.getRandom(), [filteredWeatherType](const MusicDefinition &def)
+						{
+							DebugAssert(def.getType() == MusicDefinition::Type::Weather);
+							const auto &weatherMusicDef = def.getWeatherMusicDefinition();
+							return weatherMusicDef.type == filteredWeatherType;
+						});
+					}
+					else
+					{
+						return musicLibrary.getRandomMusicDefinition(
+							MusicDefinition::Type::Night, game.getRandom());
+					}
 				}();
 
-				game.setMusic(musicName);
+				if (musicDef == nullptr)
+				{
+					DebugLogWarning("Missing exterior music.");
+				}
+
+				// Only play jingle when going wilderness to city.
+				const MusicDefinition *jingleMusicDef = nullptr;
+				if (activeMapType == MapType::Wilderness)
+				{
+					jingleMusicDef = musicLibrary.getRandomMusicDefinitionIf(MusicDefinition::Type::Jingle,
+						game.getRandom(), [&cityDef](const MusicDefinition &def)
+					{
+						DebugAssert(def.getType() == MusicDefinition::Type::Jingle);
+						const auto &jingleMusicDef = def.getJingleMusicDefinition();
+						return (jingleMusicDef.cityType == cityDef.type) &&
+							(jingleMusicDef.climateType == cityDef.climateType);
+					});
+
+					if (jingleMusicDef == nullptr)
+					{
+						DebugLogWarning("Missing jingle music.");
+					}
+				}
+
+				AudioManager &audioManager = game.getAudioManager();
+				audioManager.setMusic(musicDef, jingleMusicDef);
 			}
 		}
 	}
 }
 
-void GameWorldPanel::handleLevelTransition(const Int2 &playerVoxel, const Int2 &transitionVoxel)
+void GameWorldPanel::handleLevelTransition(const NewInt2 &playerVoxel, const NewInt2 &transitionVoxel)
 {
 	auto &game = this->getGame();
 	auto &gameData = game.getGameData();
 
 	// Level transitions are always between interiors.
-	auto &interior = [&gameData]() -> InteriorWorldData&
+	auto &interior = [&gameData]() -> WorldData&
 	{
-		auto &worldData = gameData.getWorldData();
-		DebugAssert(worldData.getActiveWorldType() == WorldType::Interior);
-
-		if (worldData.getBaseWorldType() != WorldType::Interior)
-		{
-			auto &exterior = static_cast<ExteriorWorldData&>(worldData);
-			auto *interiorPtr = exterior.getInterior();
-			DebugAssert(interiorPtr != nullptr);
-			return *interiorPtr;
-		}
-		else
-		{
-			return static_cast<InteriorWorldData&>(worldData);
-		}
+		auto &worldData = gameData.getActiveWorld();
+		DebugAssert(worldData.getMapType() == MapType::Interior);
+		return worldData;
 	}();
 
 	const auto &level = interior.getActiveLevel();
@@ -2251,142 +2558,153 @@ void GameWorldPanel::handleLevelTransition(const Int2 &playerVoxel, const Int2 &
 	// Get the voxel definition associated with the voxel.
 	const auto &voxelDef = [&transitionVoxel, &voxelGrid]()
 	{
-		const int x = transitionVoxel.x;
+		const SNInt x = transitionVoxel.x;
 		const int y = 1;
-		const int z = transitionVoxel.y;
+		const WEInt z = transitionVoxel.y;
 		const uint16_t voxelID = voxelGrid.getVoxel(x, y, z);
 		return voxelGrid.getVoxelDef(voxelID);
 	}();
 
 	// If the associated voxel data is a wall, then it might be a transition voxel.
-	if (voxelDef.dataType == VoxelDataType::Wall)
+	if (voxelDef.type == ArenaTypes::VoxelType::Wall)
 	{
-		const VoxelDefinition::WallData &wallData = voxelDef.wall;
-
-		// The direction from a level up/down voxel to where the player should end up after
-		// going through. In other words, it points to the destination voxel adjacent to the
-		// level up/down voxel.
-		auto dirToNewVoxel = [&playerVoxel, &transitionVoxel]()
+		const LevelData::Transitions &transitions = level.getTransitions();
+		const auto transitionIter = transitions.find(transitionVoxel);
+		if (transitionIter != transitions.end())
 		{
-			const int diffX = transitionVoxel.x - playerVoxel.x;
-			const int diffZ = transitionVoxel.y - playerVoxel.y;
-
-			// @todo: this probably isn't robust enough. Maybe also check the player's angle
-			// of velocity with angles to the voxel's corners to get the "arrival vector"
-			// and thus the "near face" that is intersected, because this method doesn't
-			// handle the player coming in at a diagonal.
-
-			// Check which way the player is going and get the reverse of it.
-			if (diffX > 0)
+			// The direction from a level up/down voxel to where the player should end up after
+			// going through. In other words, it points to the destination voxel adjacent to the
+			// level up/down voxel.
+			auto dirToNewVoxel = [&playerVoxel, &transitionVoxel]()
 			{
-				// From south to north.
-				return -Double3::UnitX;
+				const SNInt diffX = transitionVoxel.x - playerVoxel.x;
+				const WEInt diffZ = transitionVoxel.y - playerVoxel.y;
+
+				// @todo: this probably isn't robust enough. Maybe also check the player's angle
+				// of velocity with angles to the voxel's corners to get the "arrival vector"
+				// and thus the "near face" that is intersected, because this method doesn't
+				// handle the player coming in at a diagonal.
+
+				// Check which way the player is going and get the reverse of it.
+				if (diffX > 0)
+				{
+					// From south to north.
+					return -Double3::UnitX;
+				}
+				else if (diffX < 0)
+				{
+					// From north to south.
+					return Double3::UnitX;
+				}
+				else if (diffZ > 0)
+				{
+					// From west to east.
+					return -Double3::UnitZ;
+				}
+				else if (diffZ < 0)
+				{
+					// From east to west.
+					return Double3::UnitZ;
+				}
+				else
+				{
+					throw DebugException("Bad player transition voxel.");
+				}
+			}();
+
+			// Player destination after going through a level up/down voxel.
+			auto &player = gameData.getPlayer();
+			const NewDouble2 transitionVoxelCenter = VoxelUtils::getVoxelCenter(transitionVoxel);
+			const NewDouble2 destinationXZ(
+				transitionVoxelCenter.x + dirToNewVoxel.x,
+				transitionVoxelCenter.y + dirToNewVoxel.z);
+
+			// Lambda for transitioning the player to the given level.
+			auto switchToLevel = [&game, &gameData, &interior, &player, &destinationXZ,
+				&dirToNewVoxel](int levelIndex)
+			{
+				// Clear all open doors and fading voxels in the level the player is switching away from.
+				// @todo: why wouldn't it just clear them when it gets switched to in setActive()?
+				auto &oldActiveLevel = interior.getActiveLevel();
+				oldActiveLevel.clearTemporaryVoxelInstances();
+
+				// Select the new level.
+				interior.setActiveLevelIndex(levelIndex);
+
+				// Set the new level active in the renderer.
+				auto &newActiveLevel = interior.getActiveLevel();
+				newActiveLevel.setActive(gameData.nightLightsAreActive(), interior,
+					gameData.getProvinceDefinition(), gameData.getLocationDefinition(),
+					game.getEntityDefinitionLibrary(), game.getCharacterClassLibrary(),
+					game.getBinaryAssetLibrary(), game.getRandom(), gameData.getCitizenManager(),
+					game.getTextureManager(), game.getRenderer());
+
+				// Move the player to where they should be in the new level.
+				const NewDouble3 playerDestinationPoint(
+					destinationXZ.x,
+					newActiveLevel.getCeilingHeight() + Player::HEIGHT,
+					destinationXZ.y);
+				const CoordDouble3 playerDestinationCoord = VoxelUtils::newPointToCoord(playerDestinationPoint);
+				player.teleport(playerDestinationCoord);
+				player.lookAt(player.getPosition() + dirToNewVoxel);
+				player.setVelocityToZero();
+			};
+
+			// Lambda for opening the world map when the player enters a transition voxel
+			// that will "lead to the surface of the dungeon".
+			auto switchToWorldMap = [&playerVoxel, &game, &player]()
+			{
+				// Move player to center of previous voxel in case they change their mind
+				// about fast traveling. Don't change their direction.
+				const NewDouble3 playerDestinationPoint(
+					static_cast<SNDouble>(playerVoxel.x) + 0.50,
+					player.getPosition().point.y,
+					static_cast<WEDouble>(playerVoxel.y) + 0.50);
+				const CoordDouble3 playerDestinationCoord = VoxelUtils::newPointToCoord(playerDestinationPoint);
+				player.teleport(playerDestinationCoord);
+				player.setVelocityToZero();
+
+				game.setPanel<WorldMapPanel>(game, nullptr);
+			};
+
+			// Check the voxel type to determine what it is exactly.
+			const LevelData::Transition &transition = transitionIter->second;
+			if (transition.getType() == LevelData::Transition::Type::Menu)
+			{
+				const LevelData::Transition::Menu &transitionMenu = transition.getMenu();
+				DebugLog("Entered *MENU " + std::to_string(transitionMenu.id) + ".");
 			}
-			else if (diffX < 0)
+			else if (transition.getType() == LevelData::Transition::Type::LevelUp)
 			{
-				// From north to south.
-				return Double3::UnitX;
+				// If the custom function has a target, call it and reset it.
+				auto &onLevelUpVoxelEnter = gameData.getOnLevelUpVoxelEnter();
+
+				if (onLevelUpVoxelEnter)
+				{
+					onLevelUpVoxelEnter(game);
+					onLevelUpVoxelEnter = std::function<void(Game&)>();
+				}
+				else if (interior.getActiveLevelIndex() > 0)
+				{
+					// Decrement the world's level index and activate the new level.
+					switchToLevel(interior.getActiveLevelIndex() - 1);
+				}
+				else
+				{
+					switchToWorldMap();
+				}
 			}
-			else if (diffZ > 0)
+			else if (transition.getType() == LevelData::Transition::Type::LevelDown)
 			{
-				// From west to east.
-				return -Double3::UnitZ;
-			}
-			else if (diffZ < 0)
-			{
-				// From east to west.
-				return Double3::UnitZ;
-			}
-			else
-			{
-				throw DebugException("Bad player transition voxel.");
-			}
-		}();
-
-		// Player destination after going through a level up/down voxel.
-		auto &player = gameData.getPlayer();
-		const Double2 destinationXZ(
-			(static_cast<double>(transitionVoxel.x) + 0.50) + dirToNewVoxel.x,
-			(static_cast<double>(transitionVoxel.y) + 0.50) + dirToNewVoxel.z);
-
-		// Lambda for transitioning the player to the given level.
-		auto switchToLevel = [&game, &gameData, &interior, &player, &destinationXZ,
-			&dirToNewVoxel](int levelIndex)
-		{
-			// Clear all open doors and fading voxels in the level the player is switching
-			// away from.
-			auto &oldActiveLevel = interior.getActiveLevel();
-			oldActiveLevel.getOpenDoors().clear();
-			oldActiveLevel.getFadingVoxels().clear();
-
-			// Select the new level.
-			interior.setLevelIndex(levelIndex);
-
-			// Set the new level active in the renderer.
-			auto &newActiveLevel = interior.getActiveLevel();
-			newActiveLevel.setActive(gameData.nightLightsAreActive(), interior,
-				gameData.getLocation(), game.getMiscAssets(), game.getTextureManager(),
-				game.getRenderer());
-
-			// Move the player to where they should be in the new level.
-			player.teleport(Double3(
-				destinationXZ.x,
-				newActiveLevel.getCeilingHeight() + Player::HEIGHT,
-				destinationXZ.y));
-			player.lookAt(player.getPosition() + dirToNewVoxel);
-			player.setVelocityToZero();
-		};
-
-		// Lambda for opening the world map when the player enters a transition voxel
-		// that will "lead to the surface of the dungeon".
-		auto switchToWorldMap = [&playerVoxel, &game, &player]()
-		{
-			// Move player to center of previous voxel in case they change their mind
-			// about fast traveling. Don't change their direction.
-			player.teleport(Double3(
-				static_cast<double>(playerVoxel.x) + 0.50,
-				player.getPosition().y,
-				static_cast<double>(playerVoxel.y) + 0.50));
-			player.setVelocityToZero();
-
-			game.setPanel<WorldMapPanel>(game, nullptr);
-		};
-
-		// Check the voxel type to determine what it is exactly.
-		if (wallData.type == VoxelDefinition::WallData::Type::Menu)
-		{
-			DebugLog("Entered *MENU " + std::to_string(wallData.menuID) + ".");
-		}
-		else if (wallData.type == VoxelDefinition::WallData::Type::LevelUp)
-		{
-			// If the custom function has a target, call it and reset it.
-			auto &onLevelUpVoxelEnter = gameData.getOnLevelUpVoxelEnter();
-
-			if (onLevelUpVoxelEnter)
-			{
-				onLevelUpVoxelEnter(game);
-				onLevelUpVoxelEnter = std::function<void(Game&)>();
-			}
-			else if (interior.getLevelIndex() > 0)
-			{
-				// Decrement the world's level index and activate the new level.
-				switchToLevel(interior.getLevelIndex() - 1);
-			}
-			else
-			{
-				switchToWorldMap();
-			}
-		}
-		else if (wallData.type == VoxelDefinition::WallData::Type::LevelDown)
-		{
-			if (interior.getLevelIndex() < (interior.getLevelCount() - 1))
-			{
-				// Increment the world's level index and activate the new level.
-				switchToLevel(interior.getLevelIndex() + 1);
-			}
-			else
-			{
-				switchToWorldMap();
+				if (interior.getActiveLevelIndex() < (interior.getLevelCount() - 1))
+				{
+					// Increment the world's level index and activate the new level.
+					switchToLevel(interior.getActiveLevelIndex() + 1);
+				}
+				else
+				{
+					switchToWorldMap();
+				}
 			}
 		}
 	}
@@ -2395,25 +2713,28 @@ void GameWorldPanel::handleLevelTransition(const Int2 &playerVoxel, const Int2 &
 void GameWorldPanel::drawTooltip(const std::string &text, Renderer &renderer)
 {
 	const Texture tooltip = Panel::createTooltip(
-		text, FontName::D, this->getGame().getFontManager(), renderer);
+		text, FontName::D, this->getGame().getFontLibrary(), renderer);
 
 	auto &textureManager = this->getGame().getTextureManager();
-	const auto &gameInterface = textureManager.getTexture(
-		TextureFile::fromName(TextureName::GameWorldInterface), renderer);
+	const TextureBuilderID gameWorldInterfaceTextureBuilderID =
+		GameWorldPanel::getGameWorldInterfaceTextureBuilderID(textureManager);
+	const TextureBuilder &gameWorldInterfaceTextureBuilder =
+		textureManager.getTextureBuilderHandle(gameWorldInterfaceTextureBuilderID);
 
-	renderer.drawOriginal(tooltip, 0, Renderer::ORIGINAL_HEIGHT -
-		gameInterface.getHeight() - tooltip.getHeight());
+	const int x = 0;
+	const int y = ArenaRenderUtils::SCREEN_HEIGHT -
+		gameWorldInterfaceTextureBuilder.getHeight() - tooltip.getHeight();
+	renderer.drawOriginal(tooltip, x, y);
 }
 
-void GameWorldPanel::drawCompass(const Double2 &direction,
-	TextureManager &textureManager, Renderer &renderer)
+void GameWorldPanel::drawCompass(const NewDouble2 &direction, TextureManager &textureManager, Renderer &renderer)
 {
-	// Draw compass slider based on player direction. +X is north, +Z is east.
-	const auto &compassSlider = textureManager.getTexture(
-		TextureFile::fromName(TextureName::CompassSlider), renderer);
+	// The compass slider is drawn based on player direction.
+	const TextureBuilderID compassSliderTextureBuilderID = this->getCompassSliderTextureBuilderID();
+	const TextureBuilderID compassFrameTextureBuilderID = this->getCompassFrameTextureBuilderID();
 
 	// Angle between 0 and 2 pi.
-	const double angle = std::atan2(direction.y, direction.x);
+	const double angle = std::atan2(-direction.y, -direction.x);
 
 	// Offset in the "slider" texture. Due to how SLIDER.IMG is drawn, there's a
 	// small "pop-in" when turning from N to NE, because N is drawn in two places,
@@ -2422,10 +2743,11 @@ void GameWorldPanel::drawCompass(const Double2 &direction,
 		std::round(256.0 * (angle / (2.0 * Constants::Pi)))) % 256;
 
 	// Clip area for the visible part of the slider.
+	const TextureBuilder &compassSlider = textureManager.getTextureBuilderHandle(compassSliderTextureBuilderID);
 	const Rect clipRect(xOffset, 0, 32, compassSlider.getHeight());
 
 	// Top-left corner of the slider in 320x200 space.
-	const int sliderX = (Renderer::ORIGINAL_WIDTH / 2) - (clipRect.getWidth() / 2);
+	const int sliderX = (ArenaRenderUtils::SCREEN_WIDTH / 2) - (clipRect.getWidth() / 2);
 	const int sliderY = clipRect.getHeight();
 
 	// Since there are some off-by-one rounding errors with SDL_RenderCopy,
@@ -2433,13 +2755,21 @@ void GameWorldPanel::drawCompass(const Double2 &direction,
 	renderer.fillOriginalRect(Color::Black, sliderX - 1, sliderY - 1,
 		clipRect.getWidth() + 2, clipRect.getHeight() + 2);
 
-	renderer.drawOriginalClipped(compassSlider, clipRect, sliderX, sliderY);
+	const std::string &paletteFilename = ArenaPaletteName::Default;
+	const std::optional<PaletteID> paletteID = textureManager.tryGetPaletteID(paletteFilename.c_str());
+	if (!paletteID.has_value())
+	{
+		DebugLogError("Couldn't get palette ID for \"" + paletteFilename + "\".");
+		return;
+	}
+
+	renderer.drawOriginalClipped(compassSliderTextureBuilderID, *paletteID, clipRect,
+		sliderX, sliderY, textureManager);
 
 	// Draw the compass frame over the slider.
-	const auto &compassFrame = textureManager.getTexture(
-		TextureFile::fromName(TextureName::CompassFrame), renderer);
-	renderer.drawOriginal(compassFrame,
-		(Renderer::ORIGINAL_WIDTH / 2) - (compassFrame.getWidth() / 2), 0);
+	const TextureBuilder &compassFrame = textureManager.getTextureBuilderHandle(compassFrameTextureBuilderID);
+	renderer.drawOriginal(compassFrameTextureBuilderID, *paletteID,
+		(ArenaRenderUtils::SCREEN_WIDTH / 2) - (compassFrame.getWidth() / 2), 0, textureManager);
 }
 
 void GameWorldPanel::drawProfiler(int profilerLevel, Renderer &renderer)
@@ -2464,16 +2794,18 @@ void GameWorldPanel::drawProfiler(int profilerLevel, Renderer &renderer)
 		const std::string fpsText = String::fixedPrecision(fps, 1);
 		const std::string frameTimeText = String::fixedPrecision(frameTimeMS, 1);
 		const std::string text = "FPS: " + fpsText + " (" + frameTimeText + "ms)";
+
+		const auto &fontLibrary = game.getFontLibrary();
 		const RichTextString richText(
 			text,
 			FontName::D,
 			Color::White,
 			TextAlignment::Left,
-			game.getFontManager());
+			fontLibrary);
 
 		const int x = 2;
 		const int y = 2;
-		const TextBox textBox(x, y, richText, renderer);
+		const TextBox textBox(x, y, richText, fontLibrary, renderer);
 		renderer.drawOriginal(textBox.getTexture(), x, y);
 	}
 
@@ -2488,7 +2820,7 @@ void GameWorldPanel::drawProfiler(int profilerLevel, Renderer &renderer)
 
 		auto &gameData = game.getGameData();
 		const auto &player = gameData.getPlayer();
-		const Double3 &position = player.getPosition();
+		const NewDouble3 absolutePosition = VoxelUtils::coordToNewPoint(player.getPosition());
 		const Double3 &direction = player.getDirection();
 
 		const std::string windowWidth = std::to_string(windowDims.x);
@@ -2497,33 +2829,33 @@ void GameWorldPanel::drawProfiler(int profilerLevel, Renderer &renderer)
 		const std::string renderWidth = std::to_string(renderDims.x);
 		const std::string renderHeight = std::to_string(renderDims.y);
 		const std::string renderResScale = String::fixedPrecision(resolutionScale, 2);
+		const std::string renderThreadCount = std::to_string(profilerData.threadCount);
 
-		const std::string posX = String::fixedPrecision(position.x, 2);
-		const std::string posY = String::fixedPrecision(position.y, 2);
-		const std::string posZ = String::fixedPrecision(position.z, 2);
+		const std::string posX = String::fixedPrecision(absolutePosition.x, 2);
+		const std::string posY = String::fixedPrecision(absolutePosition.y, 2);
+		const std::string posZ = String::fixedPrecision(absolutePosition.z, 2);
 		const std::string dirX = String::fixedPrecision(direction.x, 2);
 		const std::string dirY = String::fixedPrecision(direction.y, 2);
 		const std::string dirZ = String::fixedPrecision(direction.z, 2);
 
 		std::string text =
 			"Screen: " + windowWidth + "x" + windowHeight + '\n' +
-			"Render: " + renderWidth + "x" + renderHeight + " (" + renderResScale + ")" + '\n' +
+			"Render: " + renderWidth + "x" + renderHeight + " (" + renderResScale + "), " +
+			renderThreadCount + " thread" + ((profilerData.threadCount > 1) ? "s" : "") + '\n' +
 			"Pos: " + posX + ", " + posY + ", " + posZ + '\n' +
 			"Dir: " + dirX + ", " + dirY + ", " + dirZ;
 
 		// Add any wilderness-specific info.
-		const auto &worldData = game.getGameData().getWorldData();
-		const WorldType worldType = worldData.getActiveWorldType();
-		if (worldType == WorldType::Wilderness)
+		const auto &worldData = game.getGameData().getActiveWorld();
+		const MapType mapType = worldData.getMapType();
+		if (mapType == MapType::Wilderness)
 		{
-			const auto &activeLevel = static_cast<const ExteriorLevelData&>(worldData.getActiveLevel());
+			const auto &activeLevel = worldData.getActiveLevel();
 			const auto &voxelGrid = activeLevel.getVoxelGrid();
 
-			const NewInt2 playerVoxel(
-				static_cast<int>(position.x),
-				static_cast<int>(position.z));
+			const NewInt3 playerVoxel = VoxelUtils::pointToVoxel(absolutePosition);
 			const OriginalInt2 originalVoxel = VoxelUtils::newVoxelToOriginalVoxel(
-				playerVoxel, voxelGrid.getWidth(), voxelGrid.getDepth());
+				NewInt2(playerVoxel.x, playerVoxel.z));
 			const Int2 chunkCoord(
 				originalVoxel.x / RMDFile::WIDTH,
 				originalVoxel.y / RMDFile::DEPTH);
@@ -2534,21 +2866,30 @@ void GameWorldPanel::drawProfiler(int profilerLevel, Renderer &renderer)
 			text += "\nChunk: " + chunkX + ", " + chunkY;
 		}
 
-		auto &fontManager = game.getFontManager();
+		auto &fontLibrary = game.getFontLibrary();
 		const FontName fontName = FontName::D;
 		const RichTextString richText(
 			text,
 			fontName,
 			Color::White,
 			TextAlignment::Left,
-			fontManager);
+			fontLibrary);
 
 		// Get character height of the FPS font so Y position is correct.
-		const int yOffset = fontManager.getFont(fontName).getCharacterHeight();
+		const char *fontNameStr = FontUtils::fromName(fontName);
+		int fontIndex;
+		if (!fontLibrary.tryGetDefinitionIndex(fontNameStr, &fontIndex))
+		{
+			DebugLogWarning("Couldn't get font \"" + std::string(fontNameStr) + "\".");
+			return;
+		}
+
+		const FontDefinition &fontDef = fontLibrary.getDefinition(fontIndex);
+		const int yOffset = fontDef.getCharacterHeight();
 
 		const int x = 2;
 		const int y = 2 + yOffset;
-		const TextBox textBox(x, y, richText, renderer);
+		const TextBox textBox(x, y, richText, fontLibrary, renderer);
 		renderer.drawOriginal(textBox.getTexture(), x, y);
 	}
 
@@ -2567,16 +2908,17 @@ void GameWorldPanel::drawProfiler(int profilerLevel, Renderer &renderer)
 			"                               " + std::to_string(targetFps) + "\n\n\n\n" +
 			"                               " + std::to_string(0);
 
+		const auto &fontLibrary = game.getFontLibrary();
 		const RichTextString richText(
 			text,
 			FontName::D,
 			Color::White,
 			TextAlignment::Left,
-			game.getFontManager());
+			fontLibrary);
 
 		const int x = 2;
 		const int y = 72;
-		const TextBox textBox(x, y, richText, renderer);
+		const TextBox textBox(x, y, richText, fontLibrary, renderer);
 
 		const Texture frameTimesGraph = [&renderer, &game, &fpsCounter, targetFps]()
 		{
@@ -2661,7 +3003,7 @@ void GameWorldPanel::tick(double dt)
 	auto &gameData = game.getGameData();
 	const bool debugFastForwardClock = inputManager.keyIsDown(SDL_SCANCODE_R); // @todo: camp button
 	const Clock oldClock = gameData.getClock();
-	gameData.tickTime(debugFastForwardClock ? (dt * 250.0) : dt, game);
+	gameData.tick(debugFastForwardClock ? (dt * 250.0) : dt, game);
 	const Clock newClock = gameData.getClock();
 
 	auto &renderer = game.getRenderer();
@@ -2669,8 +3011,8 @@ void GameWorldPanel::tick(double dt)
 	// See if the clock passed the boundary between night and day, and vice versa.
 	const double oldClockTime = oldClock.getPreciseTotalSeconds();
 	const double newClockTime = newClock.getPreciseTotalSeconds();
-	const double lamppostActivateTime = GameData::LamppostActivate.getPreciseTotalSeconds();
-	const double lamppostDeactivateTime = GameData::LamppostDeactivate.getPreciseTotalSeconds();
+	const double lamppostActivateTime = ArenaClockUtils::LamppostActivate.getPreciseTotalSeconds();
+	const double lamppostDeactivateTime = ArenaClockUtils::LamppostDeactivate.getPreciseTotalSeconds();
 	const bool activateNightLights =
 		(oldClockTime < lamppostActivateTime) &&
 		(newClockTime >= lamppostActivateTime);
@@ -2687,14 +3029,14 @@ void GameWorldPanel::tick(double dt)
 		this->handleNightLightChange(false);
 	}
 
-	auto &worldData = gameData.getWorldData();
-	const WorldType worldType = worldData.getActiveWorldType();
+	auto &worldData = gameData.getActiveWorld();
+	const MapType mapType = worldData.getMapType();
 
 	// Check for changes in exterior music depending on the time.
-	if ((worldType == WorldType::City) || (worldType == WorldType::Wilderness))
+	if ((mapType == MapType::City) || (mapType == MapType::Wilderness))
 	{
-		const double dayMusicStartTime = GameData::MusicSwitchToDay.getPreciseTotalSeconds();
-		const double nightMusicStartTime = GameData::MusicSwitchToNight.getPreciseTotalSeconds();
+		const double dayMusicStartTime = ArenaClockUtils::MusicSwitchToDay.getPreciseTotalSeconds();
+		const double nightMusicStartTime = ArenaClockUtils::MusicSwitchToNight.getPreciseTotalSeconds();
 		const bool changeToDayMusic =
 			(oldClockTime < dayMusicStartTime) &&
 			(newClockTime >= dayMusicStartTime);
@@ -2702,35 +3044,60 @@ void GameWorldPanel::tick(double dt)
 			(oldClockTime < nightMusicStartTime) &&
 			(newClockTime >= nightMusicStartTime);
 
+		const MusicLibrary &musicLibrary = game.getMusicLibrary();
+
 		if (changeToDayMusic)
 		{
-			const auto &location = gameData.getLocation();
-			const ClimateType climateType = LocationUtils::getCityClimateType(
-				location.localCityID, location.provinceID, game.getMiscAssets());
+			const LocationDefinition &locationDef = gameData.getLocationDefinition();
+			const LocationDefinition::CityDefinition &cityDef = locationDef.getCityDefinition();
 			const WeatherType filteredWeatherType = WeatherUtils::getFilteredWeatherType(
-				gameData.getWeatherType(), climateType);
+				gameData.getWeatherType(), cityDef.climateType);
 
-			const MusicName musicName = MusicUtils::getExteriorMusicName(filteredWeatherType);
-			game.setMusic(musicName);
+			const MusicDefinition *musicDef = musicLibrary.getRandomMusicDefinitionIf(
+				MusicDefinition::Type::Weather, game.getRandom(),
+				[filteredWeatherType](const MusicDefinition &def)
+			{
+				DebugAssert(def.getType() == MusicDefinition::Type::Weather);
+				const auto &weatherMusicDef = def.getWeatherMusicDefinition();
+				return weatherMusicDef.type == filteredWeatherType;
+			});
+
+			if (musicDef == nullptr)
+			{
+				DebugLogWarning("Missing weather music.");
+			}
+
+			AudioManager &audioManager = game.getAudioManager();
+			audioManager.setMusic(musicDef);
 		}
 		else if (changeToNightMusic)
 		{
-			game.setMusic(MusicName::Night);
+			const MusicDefinition *musicDef = musicLibrary.getRandomMusicDefinition(
+				MusicDefinition::Type::Night, game.getRandom());
+
+			if (musicDef == nullptr)
+			{
+				DebugLogWarning("Missing night music.");
+			}
+
+			AudioManager &audioManager = game.getAudioManager();
+			audioManager.setMusic(musicDef);
 		}
 	}
 
 	// Tick the player.
 	auto &player = gameData.getPlayer();
-	const Int3 oldPlayerVoxel = player.getVoxelPosition();
+	const CoordDouble3 oldPlayerPoint = player.getPosition();
 	player.tick(game, dt);
-	const Int3 newPlayerVoxel = player.getVoxelPosition();
+	const CoordDouble3 newPlayerPoint = player.getPosition();
 
 	// Handle input for the player's attack.
 	this->handlePlayerAttack(mouseDelta);
 
 	// Handle door animations.
-	const Double3 newPlayerPos = player.getPosition();
-	this->handleDoors(dt, Double2(newPlayerPos.x, newPlayerPos.z));
+	const NewDouble3 newAbsolutePlayerPoint = VoxelUtils::coordToNewPoint(newPlayerPoint);
+	const NewDouble2 newAbsolutePlayerPointXZ(newAbsolutePlayerPoint.x, newAbsolutePlayerPoint.z);
+	this->handleDoors(dt, newAbsolutePlayerPointXZ);
 
 	// Tick level data (entities, animated distant land, etc.).
 	auto &levelData = worldData.getActiveLevel();
@@ -2738,11 +3105,14 @@ void GameWorldPanel::tick(double dt)
 
 	// See if the player changed voxels in the XZ plane. If so, trigger text and
 	// sound events, and handle any level transition.
-	if ((newPlayerVoxel.x != oldPlayerVoxel.x) ||
-		(newPlayerVoxel.z != oldPlayerVoxel.z))
+	const NewDouble3 oldAbsolutePlayerPoint = VoxelUtils::coordToNewPoint(oldPlayerPoint);
+	const NewInt3 oldAbsolutePlayerVoxel = VoxelUtils::pointToVoxel(oldAbsolutePlayerPoint);
+	const NewInt3 newAbsolutePlayerVoxel = VoxelUtils::pointToVoxel(newAbsolutePlayerPoint);
+	if ((newAbsolutePlayerVoxel.x != oldAbsolutePlayerVoxel.x) ||
+		(newAbsolutePlayerVoxel.z != oldAbsolutePlayerVoxel.z))
 	{
-		const Int2 oldPlayerVoxelXZ(oldPlayerVoxel.x, oldPlayerVoxel.z);
-		const Int2 newPlayerVoxelXZ(newPlayerVoxel.x, newPlayerVoxel.z);
+		const NewInt2 oldPlayerVoxelXZ(oldAbsolutePlayerVoxel.x, oldAbsolutePlayerVoxel.z);
+		const NewInt2 newPlayerVoxelXZ(newAbsolutePlayerVoxel.x, newAbsolutePlayerVoxel.z);
 
 		// Don't handle triggers and level transitions if outside the voxel grid.
 		const bool inVoxelGrid = [&worldData, &newPlayerVoxelXZ]()
@@ -2753,7 +3123,7 @@ void GameWorldPanel::tick(double dt)
 				(newPlayerVoxelXZ.y >= 0) && (newPlayerVoxelXZ.y < voxelGrid.getDepth());
 		}();
 
-		if (inVoxelGrid && (worldData.getActiveWorldType() == WorldType::Interior))
+		if (inVoxelGrid && (worldData.getMapType() == MapType::Interior))
 		{
 			this->handleTriggers(newPlayerVoxelXZ);
 
@@ -2776,34 +3146,53 @@ void GameWorldPanel::render(Renderer &renderer)
 	// clearing the native buffer beforehand is still necessary.
 	auto &game = this->getGame();
 	auto &gameData = game.getGameData();
-	const auto &miscAssets = game.getMiscAssets();
 	auto &player = gameData.getPlayer();
-	const auto &worldData = gameData.getWorldData();
+	const auto &worldData = gameData.getActiveWorld();
 	const auto &level = worldData.getActiveLevel();
 	const auto &options = game.getOptions();
 	const double ambientPercent = gameData.getAmbientPercent();
 
-	const double latitude = [&gameData, &miscAssets]()
+	const double latitude = [&gameData]()
 	{
-		const WorldMapDefinition &worldMapDef = miscAssets.getWorldMapDefinition();
-		const LocationDefinition &locationDef = gameData.getLocationDefinition(worldMapDef);
+		const LocationDefinition &locationDef = gameData.getLocationDefinition();
 		return locationDef.getLatitude();
 	}();
 
-	const bool isExterior = worldData.getActiveWorldType() != WorldType::Interior;
-
-	renderer.renderWorld(player.getPosition(), player.getDirection(),
-		options.getGraphics_VerticalFOV(), ambientPercent, gameData.getDaytimePercent(),
-		gameData.getChasmAnimPercent(), latitude, options.getGraphics_ParallaxSky(),
-		gameData.nightLightsAreActive(), isExterior, options.getMisc_PlayerHasLight(),
-		options.getMisc_ChunkDistance(), level.getCeilingHeight(), level.getOpenDoors(),
-		level.getFadingVoxels(), level.getVoxelGrid(), level.getEntityManager());
+	const bool isExterior = worldData.getMapType() != MapType::Interior;
 
 	auto &textureManager = game.getTextureManager();
-	textureManager.setPalette(PaletteFile::fromName(PaletteName::Default));
+	const std::string &defaultPaletteFilename = ArenaPaletteName::Default;
+	const std::optional<PaletteID> defaultPaletteID = textureManager.tryGetPaletteID(defaultPaletteFilename.c_str());
+	if (!defaultPaletteID.has_value())
+	{
+		DebugLogError("Couldn't get default palette ID from \"" + defaultPaletteFilename + "\".");
+		return;
+	}
 
-	const auto &gameInterface = textureManager.getTexture(
-		TextureFile::fromName(TextureName::GameWorldInterface), renderer);
+	const Palette &defaultPalette = textureManager.getPaletteHandle(*defaultPaletteID);
+
+	renderer.renderWorld(player.getPosition(), player.getDirection(), options.getGraphics_VerticalFOV(),
+		ambientPercent, gameData.getDaytimePercent(), gameData.getChasmAnimPercent(), latitude,
+		gameData.nightLightsAreActive(), isExterior, options.getMisc_PlayerHasLight(),
+		options.getMisc_ChunkDistance(), level.getCeilingHeight(), level, game.getEntityDefinitionLibrary(),
+		defaultPalette);
+
+	const TextureBuilderID gameWorldInterfaceTextureBuilderID =
+		GameWorldPanel::getGameWorldInterfaceTextureBuilderID(textureManager);
+
+	const TextureBuilderID statusGradientTextureBuilderID = [this]()
+	{
+		constexpr int gradientID = 0; // Default for now.
+		return this->getStatusGradientTextureBuilderID(gradientID);
+	}();
+	
+	const TextureBuilderID playerPortraitTextureBuilderID = [this, &player]()
+	{
+		const std::string &headsFilename = PortraitFile::getHeads(player.isMale(), player.getRaceID(), true);
+		return this->getPlayerPortraitTextureBuilderID(headsFilename, player.getPortraitID());
+	}();
+
+	const TextureBuilderID noSpellTextureBuilderID = this->getNoSpellTextureBuilderID();
 
 	const auto &inputManager = game.getInputManager();
 	const Int2 mousePosition = inputManager.getMousePosition();
@@ -2814,25 +3203,21 @@ void GameWorldPanel::render(Renderer &renderer)
 	if (!modernInterface)
 	{
 		// Draw game world interface.
-		renderer.drawOriginal(gameInterface, 0,
-			Renderer::ORIGINAL_HEIGHT - gameInterface.getHeight());
+		const TextureBuilderRef gameWorldInterfaceTextureBuilderRef =
+			textureManager.getTextureBuilderRef(gameWorldInterfaceTextureBuilderID);
+		renderer.drawOriginal(gameWorldInterfaceTextureBuilderID, *defaultPaletteID, 0,
+			ArenaRenderUtils::SCREEN_HEIGHT - gameWorldInterfaceTextureBuilderRef.getHeight(), textureManager);
 
 		// Draw player portrait.
-		const auto &headsFilename = PortraitFile::getHeads(
-			player.getGenderName(), player.getRaceID(), true);
-		const auto &portrait = textureManager.getTextures(
-			headsFilename, renderer).at(player.getPortraitID());
-		const auto &status = textureManager.getTextures(
-			TextureFile::fromName(TextureName::StatusGradients), renderer).at(0);
-		renderer.drawOriginal(status, 14, 166);
-		renderer.drawOriginal(portrait, 14, 166);
+		renderer.drawOriginal(statusGradientTextureBuilderID, *defaultPaletteID, 14, 166, textureManager);
+		renderer.drawOriginal(playerPortraitTextureBuilderID, *defaultPaletteID, 14, 166, textureManager);
 
 		// If the player's class can't use magic, show the darkened spell icon.
-		if (!player.getCharacterClass().canCastMagic())
+		const auto &charClassLibrary = game.getCharacterClassLibrary();
+		const auto &charClassDef = charClassLibrary.getDefinition(player.getCharacterClassDefID());
+		if (!charClassDef.canCastMagic())
 		{
-			const auto &nonMagicIcon = textureManager.getTexture(
-				TextureFile::fromName(TextureName::NoSpell), renderer);
-			renderer.drawOriginal(nonMagicIcon, 91, 177);
+			renderer.drawOriginal(noSpellTextureBuilderID, *defaultPaletteID, 91, 177, textureManager);
 		}
 
 		// Draw text: player name.
@@ -2844,30 +3229,44 @@ void GameWorldPanel::render(Renderer &renderer)
 void GameWorldPanel::renderSecondary(Renderer &renderer)
 {
 	DebugAssert(this->getGame().gameDataIsActive());
-
-	// Several interface objects are in this method because they are hidden by the status
-	// pop-up and the spells list.
-	auto &textureManager = this->getGame().getTextureManager();
-	textureManager.setPalette(PaletteFile::fromName(PaletteName::Default));
-
-	const auto &gameInterface = textureManager.getTexture(
-		TextureFile::fromName(TextureName::GameWorldInterface), renderer);
-
+	
 	auto &gameData = this->getGame().getGameData();
 	auto &player = gameData.getPlayer();
 	const auto &options = this->getGame().getOptions();
 	const bool modernInterface = options.getGraphics_ModernInterface();
+
+	// Several interface objects are in this method because they are hidden by the status
+	// pop-up and the spells list.
+	auto &textureManager = this->getGame().getTextureManager();
+	const std::string &defaultPaletteFilename = ArenaPaletteName::Default;
+	const std::optional<PaletteID> defaultPaletteID = textureManager.tryGetPaletteID(defaultPaletteFilename.c_str());
+	if (!defaultPaletteID.has_value())
+	{
+		DebugLogError("Couldn't get default palette ID from \"" + defaultPaletteFilename + "\".");
+		return;
+	}
+
+	const TextureBuilderID gameWorldInterfaceTextureBuilderID =
+		GameWorldPanel::getGameWorldInterfaceTextureBuilderID(textureManager);
 
 	// Display player's weapon if unsheathed. The position also depends on whether
 	// the interface is in classic or modern mode.
 	const auto &weaponAnimation = player.getWeaponAnimation();
 	if (!weaponAnimation.isSheathed())
 	{
-		const int index = weaponAnimation.getFrameIndex();
-		const std::string &weaponFilename = weaponAnimation.getAnimationFilename();
-		const Texture &weaponTexture = textureManager.getTextures(
-			weaponFilename, renderer).at(index);
-		const Int2 &weaponOffset = this->weaponOffsets.at(index);
+		const int weaponAnimIndex = weaponAnimation.getFrameIndex();
+		const TextureBuilderID weaponTextureBuilderID = [this, &weaponAnimation, weaponAnimIndex]()
+		{
+			const std::string &weaponFilename = weaponAnimation.getAnimationFilename();
+			return this->getWeaponTextureBuilderID(weaponFilename, weaponAnimIndex);
+		}();
+
+		const TextureBuilderRef gameWorldInterfaceTextureBuilderRef =
+			textureManager.getTextureBuilderRef(gameWorldInterfaceTextureBuilderID);
+		const TextureBuilderRef weaponTextureBuilderRef = textureManager.getTextureBuilderRef(weaponTextureBuilderID);
+
+		DebugAssertIndex(this->weaponOffsets, weaponAnimIndex);
+		const Int2 &weaponOffset = this->weaponOffsets[weaponAnimIndex];
 
 		// Draw the current weapon image depending on interface mode.
 		if (modernInterface)
@@ -2878,7 +3277,7 @@ void GameWorldPanel::renderSecondary(Renderer &renderer)
 
 			// Percent of the horizontal weapon offset across the original screen.
 			const double weaponOffsetXPercent = static_cast<double>(weaponOffset.x) /
-				static_cast<double>(Renderer::ORIGINAL_WIDTH);
+				static_cast<double>(ArenaRenderUtils::SCREEN_WIDTH);
 
 			// Native left and right screen edges converted to original space.
 			const int newLeft = renderer.nativeToOriginal(Int2(0, 0)).x;
@@ -2887,22 +3286,22 @@ void GameWorldPanel::renderSecondary(Renderer &renderer)
 			const double newDiff = static_cast<double>(newRight - newLeft);
 
 			// Values to scale original weapon dimensions by.
-			const double weaponScaleX = newDiff / static_cast<double>(Renderer::ORIGINAL_WIDTH);
-			const double weaponScaleY = static_cast<double>(Renderer::ORIGINAL_HEIGHT) /
-				static_cast<double>(Renderer::ORIGINAL_HEIGHT - gameInterface.getHeight());
+			const double weaponScaleX = newDiff / static_cast<double>(ArenaRenderUtils::SCREEN_WIDTH);
+			const double weaponScaleY = static_cast<double>(ArenaRenderUtils::SCREEN_HEIGHT) /
+				static_cast<double>(ArenaRenderUtils::SCREEN_HEIGHT - gameWorldInterfaceTextureBuilderRef.getHeight());
 
 			const int weaponX = newLeft +
 				static_cast<int>(std::round(newDiff * weaponOffsetXPercent));
 			const int weaponY = static_cast<int>(std::round(
 				static_cast<double>(weaponOffset.y) * weaponScaleY));
 			const int weaponWidth = static_cast<int>(std::round(
-				static_cast<double>(weaponTexture.getWidth()) * weaponScaleX));
+				static_cast<double>(weaponTextureBuilderRef.getWidth()) * weaponScaleX));
 			const int weaponHeight = static_cast<int>(std::round(
-				static_cast<double>(std::min(weaponTexture.getHeight() + 1,
-					std::max(Renderer::ORIGINAL_HEIGHT - weaponY, 0))) * weaponScaleY));
+				static_cast<double>(std::min(weaponTextureBuilderRef.getHeight() + 1,
+					std::max(ArenaRenderUtils::SCREEN_HEIGHT - weaponY, 0))) * weaponScaleY));
 
-			renderer.drawOriginal(weaponTexture,
-				weaponX, weaponY, weaponWidth, weaponHeight);
+			renderer.drawOriginal(weaponTextureBuilderID, *defaultPaletteID,
+				weaponX, weaponY, weaponWidth, weaponHeight, textureManager);
 
 			// Reset letterbox mode back to what it was.
 			renderer.setLetterboxMode(options.getGraphics_LetterboxMode());
@@ -2912,13 +3311,13 @@ void GameWorldPanel::renderSecondary(Renderer &renderer)
 			// Clamp the max weapon height non-negative since some weapon animations like the
 			// morning star can cause it to become -1.
 			const int maxWeaponHeight = std::max(
-				(Renderer::ORIGINAL_HEIGHT - gameInterface.getHeight()) - weaponOffset.y, 0);
+				(ArenaRenderUtils::SCREEN_HEIGHT - gameWorldInterfaceTextureBuilderRef.getHeight()) - weaponOffset.y, 0);
 
 			// Add 1 to the height because Arena's renderer has an off-by-one bug, and a 1 pixel
 			// gap appears unless a small change is added.
-			const int weaponHeight = std::clamp(weaponTexture.getHeight() + 1, 0, maxWeaponHeight);
-			renderer.drawOriginal(weaponTexture,
-				weaponOffset.x, weaponOffset.y, weaponTexture.getWidth(), weaponHeight);
+			const int weaponHeight = std::clamp(weaponTextureBuilderRef.getHeight() + 1, 0, maxWeaponHeight);
+			renderer.drawOriginal(weaponTextureBuilderID, *defaultPaletteID,
+				weaponOffset.x, weaponOffset.y, weaponTextureBuilderRef.getWidth(), weaponHeight, textureManager);
 		}
 	}
 
@@ -2936,13 +3335,14 @@ void GameWorldPanel::renderSecondary(Renderer &renderer)
 		const Texture *triggerTextTexture;
 		gameData.getTriggerTextRenderInfo(&triggerTextTexture);
 
-		const int centerX = (Renderer::ORIGINAL_WIDTH / 2) - (triggerTextTexture->getWidth() / 2) - 1;
-		const int centerY = [modernInterface, &gameInterface, triggerTextTexture]()
+		const TextureBuilderRef gameWorldInterfaceTextureBuilderRef =
+			textureManager.getTextureBuilderRef(gameWorldInterfaceTextureBuilderID);
+		const int centerX = (ArenaRenderUtils::SCREEN_WIDTH / 2) - (triggerTextTexture->getWidth() / 2) - 1;
+		const int centerY = [modernInterface, &gameWorldInterfaceTextureBuilderRef, triggerTextTexture]()
 		{
-			const int interfaceOffset = modernInterface ?
-				(gameInterface.getHeight() / 2) : gameInterface.getHeight();
-			return Renderer::ORIGINAL_HEIGHT - interfaceOffset -
-				triggerTextTexture->getHeight() - 2;
+			const int interfaceOffset = modernInterface ? (gameWorldInterfaceTextureBuilderRef.getHeight() / 2) :
+				gameWorldInterfaceTextureBuilderRef.getHeight();
+			return ArenaRenderUtils::SCREEN_HEIGHT - interfaceOffset - triggerTextTexture->getHeight() - 2;
 		}();
 
 		renderer.drawOriginal(*triggerTextTexture, centerX, centerY);
@@ -2953,7 +3353,7 @@ void GameWorldPanel::renderSecondary(Renderer &renderer)
 		const Texture *actionTextTexture;
 		gameData.getActionTextRenderInfo(&actionTextTexture);
 
-		const int textX = (Renderer::ORIGINAL_WIDTH / 2) - (actionTextTexture->getWidth() / 2);
+		const int textX = (ArenaRenderUtils::SCREEN_WIDTH / 2) - (actionTextTexture->getWidth() / 2);
 		const int textY = 20;
 		renderer.drawOriginal(*actionTextTexture, textX, textY);
 	}
@@ -2966,13 +3366,17 @@ void GameWorldPanel::renderSecondary(Renderer &renderer)
 	// Check if the mouse is over one of the buttons for tooltips in classic mode.
 	if (!modernInterface)
 	{
-		const auto &inputManager = this->getGame().getInputManager();
+		auto &game = this->getGame();
+		const auto &inputManager = game.getInputManager();
 		const Int2 mousePosition = inputManager.getMousePosition();
 		const Int2 originalPosition = renderer.nativeToOriginal(mousePosition);
 
 		// Get the hovered tooltip string, or the empty string if none are hovered over.
-		const std::string tooltip = [this, &player, &originalPosition]() -> std::string
+		const std::string tooltip = [this, &game, &player, &originalPosition]() -> std::string
 		{
+			const auto &charClassLibrary = game.getCharacterClassLibrary();
+			const auto &charClassDef = charClassLibrary.getDefinition(player.getCharacterClassDefID());
+
 			if (this->characterSheetButton.contains(originalPosition))
 			{
 				return "Character Sheet";
@@ -2993,8 +3397,7 @@ void GameWorldPanel::renderSecondary(Renderer &renderer)
 			{
 				return "Status";
 			}
-			else if (this->magicButton.contains(originalPosition) &&
-				player.getCharacterClass().canCastMagic())
+			else if (this->magicButton.contains(originalPosition) && charClassDef.canCastMagic())
 			{
 				return "Spells";
 			}

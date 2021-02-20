@@ -4,35 +4,25 @@
 
 #include "components/debug/Debug.h"
 
-Chunk::Chunk(int x, int y, int height)
+void Chunk::init(const ChunkInt2 &coord, int height)
 {
 	// Set all voxels to air and unused.
 	this->voxels.init(Chunk::WIDTH, height, Chunk::DEPTH);
-	this->voxels.fill(0);
+	this->voxels.fill(Chunk::AIR_VOXEL_ID);
 
 	this->voxelDefs.fill(VoxelDefinition());
 	this->activeVoxelDefs.fill(false);
 
-	// Let the first voxel data (air) be usable immediately. All default voxel IDs can safely point to it.
+	// Let the first voxel definition (air) be usable immediately. All default voxel IDs can safely
+	// point to it.
 	this->activeVoxelDefs.front() = true;
 
-	this->x = x;
-	this->y = y;
+	this->coord = coord;
 }
 
-int Chunk::getX() const
+const ChunkInt2 &Chunk::getCoord() const
 {
-	return this->x;
-}
-
-int Chunk::getY() const
-{
-	return this->y;
-}
-
-constexpr int Chunk::getWidth() const
-{
-	return Chunk::WIDTH;
+	return this->coord;
 }
 
 int Chunk::getHeight() const
@@ -40,14 +30,15 @@ int Chunk::getHeight() const
 	return this->voxels.getHeight();
 }
 
-constexpr int Chunk::getDepth() const
-{
-	return Chunk::DEPTH;
-}
-
-VoxelID Chunk::get(int x, int y, int z) const
+Chunk::VoxelID Chunk::getVoxel(SNInt x, int y, WEInt z) const
 {
 	return this->voxels.get(x, y, z);
+}
+
+int Chunk::getVoxelDefCount() const
+{
+	return static_cast<int>(std::count(this->activeVoxelDefs.begin(),
+		this->activeVoxelDefs.end(), true));
 }
 
 const VoxelDefinition &Chunk::getVoxelDef(VoxelID id) const
@@ -57,29 +48,44 @@ const VoxelDefinition &Chunk::getVoxelDef(VoxelID id) const
 	return this->voxelDefs[id];
 }
 
-int Chunk::debug_getVoxelDefCount() const
+int Chunk::getVoxelInstCount() const
 {
-	return static_cast<int>(
-		std::count(this->activeVoxelDefs.begin(), this->activeVoxelDefs.end(), true));
+	return static_cast<int>(this->voxelInsts.size());
 }
 
-void Chunk::set(int x, int y, int z, VoxelID value)
+VoxelInstance &Chunk::getVoxelInst(int index)
+{
+	DebugAssertIndex(this->voxelInsts, index);
+	return this->voxelInsts[index];
+}
+
+const VoxelInstance &Chunk::getVoxelInst(int index) const
+{
+	DebugAssertIndex(this->voxelInsts, index);
+	return this->voxelInsts[index];
+}
+
+void Chunk::setVoxel(SNInt x, int y, WEInt z, VoxelID value)
 {
 	this->voxels.set(x, y, z, value);
 }
 
-VoxelID Chunk::addVoxelDef(VoxelDefinition &&voxelDef)
+bool Chunk::tryAddVoxelDef(VoxelDefinition &&voxelDef, Chunk::VoxelID *outID)
 {
 	// Find a place to add the voxel data.
 	const auto iter = std::find(this->activeVoxelDefs.begin(), this->activeVoxelDefs.end(), false);
 
-	// If we ever hit this, we need more bits per voxel.
-	DebugAssert(iter != this->activeVoxelDefs.end());
+	// If this is ever true, we need more bits per voxel.
+	if (iter == this->activeVoxelDefs.end())
+	{
+		return false;
+	}
 
 	const VoxelID id = static_cast<VoxelID>(std::distance(this->activeVoxelDefs.begin(), iter));
 	this->voxelDefs[id] = std::move(voxelDef);
 	this->activeVoxelDefs[id] = true;
-	return id;
+	*outID = id;
+	return true;
 }
 
 void Chunk::removeVoxelDef(VoxelID id)
@@ -87,4 +93,51 @@ void Chunk::removeVoxelDef(VoxelID id)
 	DebugAssert(id < this->voxelDefs.size());
 	this->voxelDefs[id] = VoxelDefinition();
 	this->activeVoxelDefs[id] = false;
+}
+
+void Chunk::clear()
+{
+	this->voxels.clear();
+	this->voxelDefs.fill(VoxelDefinition());
+	this->activeVoxelDefs.fill(false);
+	this->voxelInsts.clear();
+	this->coord = ChunkInt2();
+}
+
+void Chunk::update(double dt)
+{
+	for (int i = static_cast<int>(this->voxelInsts.size()) - 1; i >= 0; i--)
+	{
+		VoxelInstance &voxelInst = this->voxelInsts[i];
+		voxelInst.update(dt);
+
+		// See if the voxel instance can be removed because it no longer has interesting state.
+		if (!voxelInst.hasRelevantState())
+		{
+			const VoxelInstance::Type voxelInstType = voxelInst.getType();
+			
+			// Do the voxel instance's "on destroy" action (if any).
+			if (voxelInstType == VoxelInstance::Type::Fading)
+			{
+				// Convert the faded voxel to air or a chasm depending on the Y coordinate.
+				const int voxelY = voxelInst.getY();
+				if (voxelY == 0)
+				{
+					// Chasm voxel.
+					// @todo: may need to store vector<Int3> of all faded voxels here so their adjacent
+					// chasms can be updated properly in the next for loop. I say "may" because voxel
+					// instances might be separate enough now from the old context-sensitive voxel
+					// definitions. Need to re-evaluate it.
+					DebugNotImplemented();
+				}
+				else
+				{
+					// Air voxel.
+					this->setVoxel(voxelInst.getX(), voxelY, voxelInst.getZ(), Chunk::AIR_VOXEL_ID);
+				}
+			}
+
+			this->voxelInsts.erase(this->voxelInsts.begin() + i);
+		}
+	}
 }

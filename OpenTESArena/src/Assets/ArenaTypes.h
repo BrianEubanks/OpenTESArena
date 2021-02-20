@@ -7,11 +7,98 @@
 #include <string>
 #include <vector>
 
-// Various composite types used with Arena's binary data files. Struct sizes are hardcoded
-// to show intent and to avoid issues with padding since they map directly to Arena's data.
+// Various types used with Arena's binary data files. Struct sizes are hardcoded to show
+// intent and to avoid issues with padding since they map directly to Arena's data.
 
 namespace ArenaTypes
 {
+	// For .MIF and .RMD FLOR/MAP1/MAP2 voxels.
+	using VoxelID = uint16_t;
+
+	// Flat entries can be in .MIF and .RMD FLOR/MAP1 voxels.
+	using FlatIndex = uint16_t;
+
+	// *ITEM indices are used for entities; some values are reserved for creatures, humans, etc..
+	using ItemIndex = uint16_t;
+
+	// Maps one or more *MENU IDs to a type of transition voxel. Cities and the wilderness interpret
+	// IDs differently.
+	enum class MenuType
+	{
+		None,
+		CityGates, // Transition between city and wilderness.
+		Crypt, // WCRYPT
+		Dungeon, // DUNGEON
+		Equipment, // EQUIP
+		House, // BS
+		MagesGuild, // MAGE
+		Noble, // NOBLE
+		Palace, // PALACE
+		Tavern, // TAVERN
+		Temple, // TEMPLE
+		Tower // TOWER
+	};
+
+	// Helps determine entity definitions during level generation. Separate from MenuType since it's only
+	// for interiors.
+	// - @todo: add an InteriorDefinition at some point to further de-hardcode things. It would contain
+	//   rulerIsMale, etc.. Might also have a variable for loot piles when sneaking in at night.
+	enum class InteriorType
+	{
+		Crypt, // WCRYPT
+		Dungeon, // DUNGEON
+		Equipment, // EQUIP
+		House, // BS
+		MagesGuild, // MAGE
+		Noble, // NOBLE
+		Palace, // PALACE
+		Tavern, // TAVERN
+		Temple, // TEMPLE
+		Tower // TOWER
+	};
+
+	// Types of city locations in a world map province.
+	enum class CityType
+	{
+		CityState,
+		Town,
+		Village
+	};
+
+	// Each type of voxel definition. These are mostly used with rendering, but also for determining how to
+	// interpret the voxel data itself. If the type is None, then the voxel is empty and there is nothing
+	// to render.
+	enum class VoxelType
+	{
+		None,
+		Wall,
+		Floor,
+		Ceiling,
+		Raised,
+		Diagonal,
+		TransparentWall,
+		Edge,
+		Chasm,
+		Door
+	};
+
+	enum class ChasmType
+	{
+		Dry,
+		Wet,
+		Lava
+	};
+
+	// Each type of door. Most doors swing open, while others raise up or slide to the side.
+	// Splitting doors do not appear in the original game but are supposedly supported.
+	enum class DoorType
+	{
+		Swinging,
+		Sliding,
+		Raising,
+		Splitting
+	};
+
 	struct Light
 	{
 		static constexpr size_t SIZE = 6;

@@ -4,7 +4,7 @@
 
 #include "components/debug/Debug.h"
 
-VoxelGrid::VoxelGrid(NSInt width, int height, EWInt depth)
+VoxelGrid::VoxelGrid(SNInt width, int height, WEInt depth)
 {
 	const int voxelCount = width * height * depth;
 	this->voxels = std::vector<uint16_t>(voxelCount, 0);
@@ -12,15 +12,18 @@ VoxelGrid::VoxelGrid(NSInt width, int height, EWInt depth)
 	this->width = width;
 	this->height = height;
 	this->depth = depth;
+
+	// Add empty (air) voxel definition by default.
+	this->addVoxelDef(VoxelDefinition());
 }
 
-int VoxelGrid::getIndex(NSInt x, int y, EWInt z) const
+int VoxelGrid::getIndex(SNInt x, int y, WEInt z) const
 {
 	DebugAssert(this->coordIsValid(x, y, z));
 	return x + (y * this->width) + (z * this->width * this->height);
 }
 
-NSInt VoxelGrid::getWidth() const
+SNInt VoxelGrid::getWidth() const
 {
 	return this->width;
 }
@@ -30,31 +33,26 @@ int VoxelGrid::getHeight() const
 	return this->height;
 }
 
-EWInt VoxelGrid::getDepth() const
+WEInt VoxelGrid::getDepth() const
 {
 	return this->depth;
 }
 
-bool VoxelGrid::coordIsValid(NSInt x, int y, EWInt z) const
+bool VoxelGrid::coordIsValid(SNInt x, int y, WEInt z) const
 {
 	return (x >= 0) && (x < this->width) && (y >= 0) && (y < this->height) &&
 		(z >= 0) && (z < this->depth);
 }
 
-uint16_t *VoxelGrid::getVoxels()
-{
-	return this->voxels.data();
-}
-
-const uint16_t *VoxelGrid::getVoxels() const
-{
-	return this->voxels.data();
-}
-
-uint16_t VoxelGrid::getVoxel(NSInt x, int y, EWInt z) const
+uint16_t VoxelGrid::getVoxel(SNInt x, int y, WEInt z) const
 {
 	const int index = this->getIndex(x, y, z);
 	return this->voxels.data()[index];
+}
+
+int VoxelGrid::getVoxelDefCount() const
+{
+	return static_cast<int>(this->voxelDefs.size());
 }
 
 VoxelDefinition &VoxelGrid::getVoxelDef(uint16_t id)
@@ -89,7 +87,7 @@ uint16_t VoxelGrid::addVoxelDef(const VoxelDefinition &voxelDef)
 	return static_cast<uint16_t>(this->voxelDefs.size() - 1);
 }
 
-void VoxelGrid::setVoxel(NSInt x, int y, EWInt z, uint16_t id)
+void VoxelGrid::setVoxel(SNInt x, int y, WEInt z, uint16_t id)
 {
 	const int index = this->getIndex(x, y, z);
 	this->voxels.data()[index] = id;

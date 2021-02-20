@@ -16,55 +16,12 @@ class Vector2i
 public:
 	static_assert(std::is_integral<T>::value);
 
+	static const Vector2i<T> Zero;
+
 	T x, y;
 
 	Vector2i(T x, T y);
 	Vector2i();
-
-	// Generates a list of points along a Bresenham line. Only signed integers can be
-	// used in a Bresenham's line (due to the error calculation).
-	template <typename C = T>
-	static typename std::enable_if<std::is_signed<C>::value, std::vector<Vector2i<T>>>::type
-		bresenhamLine(const Vector2i<T> &p1, const Vector2i<T> &p2)
-	{
-		const T dx = std::abs(p2.x - p1.x);
-		const T dy = std::abs(p2.y - p1.y);
-		const T dirX = (p1.x < p2.x) ? 1 : -1;
-		const T dirY = (p1.y < p2.y) ? 1 : -1;
-
-		T pointX = p1.x;
-		T pointY = p1.y;
-		T error = ((dx > dy) ? dx : -dy) / 2;
-		const T endX = p2.x;
-		const T endY = p2.y;
-		std::vector<Vector2i<T>> points;
-
-		while (true)
-		{
-			points.push_back(Vector2i<T>(pointX, pointY));
-
-			if ((pointX == endX) && (pointY == endY))
-			{
-				break;
-			}
-
-			const T innerError = error;
-
-			if (innerError > -dx)
-			{
-				error -= dy;
-				pointX += dirX;
-			}
-
-			if (innerError < dy)
-			{
-				error += dx;
-				pointY += dirY;
-			}
-		}
-
-		return points;
-	}
 
 	T &operator[](size_t index);
 	const T &operator[](size_t index) const;
@@ -74,7 +31,7 @@ public:
 	
 	// Only signed integers can use negation.
 	template <typename C = T>
-	typename std::enable_if<std::is_signed<C>::value, Vector2i<T>>::type operator-() const
+	typename std::enable_if_t<std::is_signed<C>::value, Vector2i<T>> operator-() const
 	{
 		return Vector2i<T>(-this->x, -this->y);
 	}
@@ -133,6 +90,9 @@ public:
 };
 
 // Unit vector definitions (can't be in .cpp file on Clang).
+template <typename T>
+const Vector2i<T> Vector2i<T>::Zero(static_cast<T>(0), static_cast<T>(0));
+
 template <typename T>
 const Vector2f<T> Vector2f<T>::Zero(static_cast<T>(0.0), static_cast<T>(0.0));
 

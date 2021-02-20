@@ -10,6 +10,7 @@
 // This class manages what sounds and music are played by OpenAL Soft.
 
 class AudioManagerImpl;
+class MusicDefinition;
 class Options;
 
 class AudioManager
@@ -36,8 +37,8 @@ public:
     void init(double musicVolume, double soundVolume, int maxChannels, int resamplingOption,
 		bool is3D, const std::string &midiConfig);
 
-	static const double MIN_VOLUME;
-	static const double MAX_VOLUME;
+	static constexpr double MIN_VOLUME = 0.0;
+	static constexpr double MAX_VOLUME = 1.0;
 
 	double getMusicVolume() const;
 	double getSoundVolume() const;
@@ -45,13 +46,20 @@ public:
 	// Returns whether the implementation supports resampling options.
 	bool hasResamplerExtension() const;
 
-	// Plays a music file. All music should loop until changed.
-	void playMusic(const std::string &filename);
+	// Returns whether the given filename is playing in any sound handle.
+	bool isPlayingSound(const std::string &filename) const;
+
+	// Returns whether the given filename references an actual sound.
+	bool soundExists(const std::string &filename) const;
 
 	// Plays a sound file. All sounds should play once. If 'position' is empty then the sound
 	// is played globally.
 	void playSound(const std::string &filename,
 		const std::optional<Double3> &position = std::nullopt);
+
+	// Sets the music to the given music definition, with an optional music to play first as a
+	// lead-in to the actual music. If no music definition is given, the current music is stopped.
+	void setMusic(const MusicDefinition *musicDef, const MusicDefinition *optMusicDef = nullptr);
 
 	// Stops the music.
 	void stopMusic();
@@ -74,9 +82,14 @@ public:
 	// The 2D option is provided for parity with the original engine.
 	void set3D(bool is3D);
 
+	// Adds a sound filename to the single-instance sounds list. These sounds can only have one
+	// live instance at a time.
+	void addSingleInstanceSound(std::string &&filename);
+	void clearSingleInstanceSounds();
+
 	// Updates any state not handled by a background thread, such as resetting
 	// the sources of finished sounds, and updating listener values (if any).
-	void update(const ListenerData *listenerData);
+	void update(double dt, const ListenerData *listenerData);
 };
 
 #endif

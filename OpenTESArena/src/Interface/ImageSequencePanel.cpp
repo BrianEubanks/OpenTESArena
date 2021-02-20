@@ -3,14 +3,10 @@
 #include "SDL.h"
 
 #include "ImageSequencePanel.h"
+#include "Texture.h"
 #include "../Game/Game.h"
-#include "../Media/PaletteFile.h"
-#include "../Media/PaletteName.h"
-#include "../Media/TextureFile.h"
 #include "../Media/TextureManager.h"
-#include "../Media/TextureName.h"
 #include "../Rendering/Renderer.h"
-#include "../Rendering/Texture.h"
 
 #include "components/debug/Debug.h"
 
@@ -94,11 +90,26 @@ void ImageSequencePanel::render(Renderer &renderer)
 	// Clear full screen.
 	renderer.clear();
 
-	auto &textureManager = this->getGame().getTextureManager();
-
 	// Draw image.
-	const auto &image = textureManager.getTexture(
-		this->textureNames.at(this->imageIndex),
-		this->paletteNames.at(this->imageIndex), renderer);
-	renderer.drawOriginal(image);
+	auto &textureManager = this->getGame().getTextureManager();
+	DebugAssertIndex(this->paletteNames, this->imageIndex);
+	const std::string &paletteName = this->paletteNames[this->imageIndex];
+	const std::optional<PaletteID> paletteID = textureManager.tryGetPaletteID(paletteName.c_str());
+	if (!paletteID.has_value())
+	{
+		DebugLogError("Couldn't get palette ID for \"" + paletteName + "\".");
+		return;
+	}
+
+	DebugAssertIndex(this->textureNames, this->imageIndex);
+	const std::string &textureName = this->textureNames[this->imageIndex];
+	const std::optional<TextureBuilderID> textureBuilderID =
+		textureManager.tryGetTextureBuilderID(textureName.c_str());
+	if (!textureBuilderID.has_value())
+	{
+		DebugLogError("Couldn't get texture builder ID for \"" + textureName + "\".");
+		return;
+	}
+
+	renderer.drawOriginal(*textureBuilderID, *paletteID, textureManager);
 }

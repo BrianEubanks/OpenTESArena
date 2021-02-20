@@ -7,8 +7,8 @@
 #include "Button.h"
 #include "ListBox.h"
 #include "Panel.h"
-#include "../Entities/CharacterClass.h"
-#include "../Rendering/Texture.h"
+#include "Texture.h"
+#include "../Entities/CharacterClassDefinition.h"
 
 // The original class list design in Arena is pretty bad. It's an alphabetical 
 // list that says nothing about the classes (thus requiring the manual for 
@@ -23,19 +23,19 @@ class TextBox;
 class ChooseClassPanel : public Panel
 {
 private:
-	static const int MAX_TOOLTIP_LINE_LENGTH;
+	static constexpr int MAX_TOOLTIP_LINE_LENGTH = 14;
 
 	std::unique_ptr<TextBox> titleTextBox;
 	std::unique_ptr<ListBox> classesListBox;
 	Button<Game&> backToClassCreationButton;
 	Button<ChooseClassPanel&> upButton, downButton;
-	Button<Game&, const CharacterClass&> acceptButton;
+	Button<Game&, int> acceptButton;
 	std::unordered_map<int, Texture> tooltipTextures;
-	std::vector<CharacterClass> charClasses;
+	std::vector<CharacterClassDefinition> charClasses;
 
-	std::string getClassArmors(const CharacterClass &characterClass) const;
-	std::string getClassShields(const CharacterClass &characterClass) const;
-	std::string getClassWeapons(const CharacterClass &characterClass) const;
+	std::string getClassArmors(const CharacterClassDefinition &charClassDef) const;
+	std::string getClassShields(const CharacterClassDefinition &charClassDef) const;
+	std::string getClassWeapons(const CharacterClassDefinition &charClassDef) const;
 
 	// Gets the rectangle for the class list's area.
 	static Rect getClassListRect(const ExeData &exeData);
@@ -45,7 +45,7 @@ public:
 	ChooseClassPanel(Game &game);
 	virtual ~ChooseClassPanel() = default;
 
-	virtual Panel::CursorData getCurrentCursor() const override;
+	virtual std::optional<Panel::CursorData> getCurrentCursor() const override;
 	virtual void handleEvent(const SDL_Event &e) override;
 	virtual void render(Renderer &renderer) override;
 };

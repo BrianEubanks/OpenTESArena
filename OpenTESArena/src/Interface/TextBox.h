@@ -5,13 +5,14 @@
 #include <vector>
 
 #include "RichTextString.h"
+#include "Surface.h"
+#include "Texture.h"
 #include "../Math/Vector2.h"
 #include "../Media/Color.h"
-#include "../Rendering/Surface.h"
-#include "../Rendering/Texture.h"
 
 // Redesigned for use with the font system using Arena assets.
 
+class FontLibrary;
 class Rect;
 class Renderer;
 
@@ -34,14 +35,16 @@ private:
 	int x, y;
 public:
 	// Default number of characters per line before a newline occurs.
-	static const int DEFAULT_TEXT_WRAP = 60;
+	static constexpr int DEFAULT_TEXT_WRAP = 60;
 
 	TextBox(int x, int y, const RichTextString &richText, const ShadowData *shadow,
-		Renderer &renderer);
+		const FontLibrary &fontLibrary, Renderer &renderer);
 	TextBox(const Int2 &center, const RichTextString &richText, const ShadowData *shadow,
+		const FontLibrary &fontLibrary, Renderer &renderer);
+	TextBox(int x, int y, const RichTextString &richText, const FontLibrary &fontLibrary,
 		Renderer &renderer);
-	TextBox(int x, int y, const RichTextString &richText, Renderer &renderer);
-	TextBox(const Int2 &center, const RichTextString &richText, Renderer &renderer);
+	TextBox(const Int2 &center, const RichTextString &richText, const FontLibrary &fontLibrary,
+		Renderer &renderer);
 
 	int getX() const;
 	int getY() const;

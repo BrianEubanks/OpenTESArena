@@ -2,20 +2,29 @@
 #define GAME_H
 
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
+#include "CharacterCreationState.h"
 #include "GameData.h"
-#include "InputManager.h"
 #include "Options.h"
-#include "../Assets/MiscAssets.h"
+#include "../Assets/BinaryAssetLibrary.h"
+#include "../Assets/TextAssetLibrary.h"
+#include "../Entities/CharacterClassLibrary.h"
+#include "../Entities/EntityDefinitionLibrary.h"
+#include "../Input/InputManager.h"
 #include "../Interface/FPSCounter.h"
 #include "../Interface/Panel.h"
 #include "../Media/AudioManager.h"
-#include "../Media/FontManager.h"
+#include "../Media/CinematicLibrary.h"
+#include "../Media/DoorSoundLibrary.h"
+#include "../Media/FontLibrary.h"
+#include "../Media/MusicLibrary.h"
 #include "../Media/TextureManager.h"
 #include "../Rendering/Renderer.h"
 
+#include "components/utilities/Allocator.h"
 #include "components/utilities/Profiler.h"
 
 // This class holds the current game data, manages the primary game loop, and 
@@ -30,8 +39,6 @@
 
 class Surface;
 
-enum class MusicName;
-
 class Game
 {
 private:
@@ -40,14 +47,23 @@ private:
 	std::vector<std::unique_ptr<Panel>> subPanels;
 
 	AudioManager audioManager;
+	MusicLibrary musicLibrary;
 	InputManager inputManager;
-	FontManager fontManager;
+	FontLibrary fontLibrary;
+	CinematicLibrary cinematicLibrary;
+	CharacterClassLibrary charClassLibrary;
+	DoorSoundLibrary doorSoundLibrary;
+	EntityDefinitionLibrary entityDefLibrary;
 	std::unique_ptr<GameData> gameData;
+	std::unique_ptr<CharacterCreationState> charCreationState;
 	Options options;
 	std::unique_ptr<Panel> panel, nextPanel, nextSubPanel;
 	Renderer renderer;
 	TextureManager textureManager;
-	MiscAssets miscAssets;
+	BinaryAssetLibrary binaryAssetLibrary;
+	TextAssetLibrary textAssetLibrary;
+	Random random; // Convenience random for ease of use.
+	ScratchAllocator scratchAllocator;
 	Profiler profiler;
 	FPSCounter fpsCounter;
 	std::string basePath, optionsPath;
@@ -87,12 +103,27 @@ public:
 	// Gets the audio manager for changing the current music and sound.
 	AudioManager &getAudioManager();
 
+	// Gets the music library with all the music definitions.
+	const MusicLibrary &getMusicLibrary() const;
+
 	// Gets the input manager for obtaining input state. This should be read-only for
 	// all classes except the Game class.
 	InputManager &getInputManager();
 
-	// Gets the font manager object for creating text with.
-	FontManager &getFontManager();
+	// Gets the font library for obtaining various fonts.
+	FontLibrary &getFontLibrary();
+
+	// Gets the cinematic library for obtaining various cinematic definitions.
+	const CinematicLibrary &getCinematicLibrary() const;
+	
+	// Gets the character class library for obtaining various class definitions.
+	const CharacterClassLibrary &getCharacterClassLibrary() const;
+
+	// Gets the door sound library for obtaining various sound mappings.
+	const DoorSoundLibrary &getDoorSoundLibrary() const;
+
+	// Gets the entity definition library for obtaining various entity definitions.
+	const EntityDefinitionLibrary &getEntityDefinitionLibrary() const;
 
 	// Determines if a game session is currently running. This is true when a player
 	// is loaded into memory.
@@ -101,6 +132,12 @@ public:
 	// The game data holds the "session" data for the game. If no session is active, 
 	// do not call this method. Verify beforehand by calling Game::gameDataIsActive().
 	GameData &getGameData() const;
+
+	// Returns whether a new character is currently being created.
+	bool characterCreationIsActive() const;
+
+	// Gets the character creation state. Character creation must be active.
+	CharacterCreationState &getCharacterCreationState() const;
 
 	// Gets the options object for various settings (resolution, volume, sensitivity).
 	Options &getOptions();
@@ -111,8 +148,15 @@ public:
 	// Gets the texture manager object for loading images from file.
 	TextureManager &getTextureManager();
 
-	// Gets the miscellaneous assets object for loading some Arena-related files.
-	MiscAssets &getMiscAssets();
+	// Gets various asset libraries for loading Arena-related files.
+	const BinaryAssetLibrary &getBinaryAssetLibrary() const;
+	const TextAssetLibrary &getTextAssetLibrary() const;
+
+	// Gets the global RNG initialized at program start.
+	Random &getRandom();
+
+	// Gets the scratch buffer that is reset each frame.
+	ScratchAllocator &getScratchAllocator();
 
 	// Gets the profiler instance for measuring precise time spans.
 	Profiler &getProfiler();
@@ -155,12 +199,13 @@ public:
 	// never call this, because if they are active, then there are no sub-panels to pop.
 	void popSubPanel();
 
-	// Sets the music to the given music name.
-	void setMusic(MusicName name);
-
 	// Sets the current game data object. A game session is active if the game data
 	// is not null.
 	void setGameData(std::unique_ptr<GameData> gameData);
+
+	// Sets the current character creation state. Character creation is active if the state
+	// is not null.
+	void setCharacterCreationState(std::unique_ptr<CharacterCreationState> charCreationState);
 
 	// Initial method for starting the game loop. This must only be called by main().
 	void loop();

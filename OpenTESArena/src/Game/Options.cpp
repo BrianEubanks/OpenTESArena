@@ -24,7 +24,6 @@ namespace
 		{ "TargetFPS", OptionType::Int },
 		{ "ResolutionScale", OptionType::Double },
 		{ "VerticalFOV", OptionType::Double },
-		{ "ParallaxSky", OptionType::Bool },
 		{ "LetterboxMode", OptionType::Int },
 		{ "CursorScale", OptionType::Double },
 		{ "ModernInterface", OptionType::Bool },
@@ -76,37 +75,6 @@ const std::string Options::SECTION_INPUT = "Input";
 const std::string Options::SECTION_AUDIO = "Audio";
 const std::string Options::SECTION_MISC = "Misc";
 
-const int Options::MIN_FPS = 15;
-const int Options::MIN_WINDOW_MODE = 0;
-const int Options::MAX_WINDOW_MODE = 1;
-const double Options::MIN_RESOLUTION_SCALE = 0.10;
-const double Options::MAX_RESOLUTION_SCALE = 1.0;
-const double Options::MIN_VERTICAL_FOV = 40.0;
-const double Options::MAX_VERTICAL_FOV = 150.0;
-const double Options::MIN_CURSOR_SCALE = 0.50;
-const double Options::MAX_CURSOR_SCALE = 8.0;
-const int Options::MIN_LETTERBOX_MODE = 0;
-const int Options::MAX_LETTERBOX_MODE = 2;
-const int Options::MIN_RENDER_THREADS_MODE = 0;
-const int Options::MAX_RENDER_THREADS_MODE = 5;
-const double Options::MIN_HORIZONTAL_SENSITIVITY = 0.50;
-const double Options::MAX_HORIZONTAL_SENSITIVITY = 50.0;
-const double Options::MIN_VERTICAL_SENSITIVITY = 0.50;
-const double Options::MAX_VERTICAL_SENSITIVITY = 50.0;
-const double Options::MIN_CAMERA_PITCH_LIMIT = 0.0;
-const double Options::MAX_CAMERA_PITCH_LIMIT = 85.0;
-const double Options::MIN_VOLUME = 0.0;
-const double Options::MAX_VOLUME = 1.0;
-const int Options::MIN_SOUND_CHANNELS = 1;
-const int Options::RESAMPLING_OPTION_COUNT = 4;
-const double Options::MIN_TIME_SCALE = 0.50;
-const double Options::MAX_TIME_SCALE = 1.0;
-const int Options::MIN_CHUNK_DISTANCE = 1;
-const int Options::MIN_STAR_DENSITY_MODE = 0;
-const int Options::MAX_STAR_DENSITY_MODE = 2;
-const int Options::MIN_PROFILER_LEVEL = 0;
-const int Options::MAX_PROFILER_LEVEL = 3;
-
 void Options::load(const char *filename,
 	std::unordered_map<std::string, Options::MapGroup> &maps)
 {
@@ -115,41 +83,43 @@ void Options::load(const char *filename,
 	if (!keyValueFile.init(filename))
 	{
 		DebugCrash("Couldn't load \"" + std::string(filename) + "\".");
+		// @todo: return false
 	}
 
-	for (const auto &sectionPair : keyValueFile.getAll())
+	for (int sectionIndex = 0; sectionIndex < keyValueFile.getSectionCount(); sectionIndex++)
 	{
-		const std::string &section = sectionPair.first;
-		const KeyValueFile::SectionMap &sectionMap = sectionPair.second;
+		const KeyValueFile::Section &section = keyValueFile.getSection(sectionIndex);
+		const std::string &sectionName = section.getName();
 
 		// Get the list of key-type pairs to pull from.
-		const auto &keyList = [&filename, &section]()
+		const auto &keyList = [&filename, &sectionName]()
 		{
-			if (section == Options::SECTION_GRAPHICS)
+			if (sectionName == Options::SECTION_GRAPHICS)
 			{
 				return GraphicsMappings;
 			}
-			else if (section == Options::SECTION_INPUT)
+			else if (sectionName == Options::SECTION_INPUT)
 			{
 				return InputMappings;
 			}
-			else if (section == Options::SECTION_AUDIO)
+			else if (sectionName == Options::SECTION_AUDIO)
 			{
 				return AudioMappings;
 			}
-			else if (section == Options::SECTION_MISC)
+			else if (sectionName == Options::SECTION_MISC)
 			{
 				return MiscMappings;
 			}
 			else
 			{
-				throw DebugException("Unrecognized section \"" +
-					section + "\" in " + filename);
+				throw DebugException("Unrecognized section \"" + sectionName + "\" in " + filename + ".");
 			}
 		}();
 
-		for (const auto &pair : sectionMap)
+		for (int pairIndex = 0; pairIndex < section.getPairCount(); pairIndex++)
 		{
+			const auto &pair = section.getPair(pairIndex);
+
 			// See if the key is recognized, and if so, see what type the value should be, 
 			// convert it, and place it in the changed map.
 			const std::string &key = pair.first;
@@ -162,25 +132,21 @@ void Options::load(const char *filename,
 			if (keyListIter != keyList.end())
 			{
 				const OptionType type = keyListIter->second;
-				auto groupIter = maps.find(section);
+				auto groupIter = maps.find(sectionName);
 
 				// Add an empty map group if the section is new.
 				if (groupIter == maps.end())
 				{
-					groupIter = maps.insert(std::make_pair(
-						section, Options::MapGroup())).first;
+					groupIter = maps.insert(std::make_pair(sectionName, Options::MapGroup())).first;
 				}
 
 				Options::MapGroup &mapGroup = groupIter->second;
-
-				// Using KeyValueFile's getter code here for convenience, despite it doing
-				// an unnecessary look-up.
 				if (type == OptionType::Bool)
 				{
 					bool value;
-					if (!keyValueFile.tryGetBoolean(section, key, value))
+					if (!section.tryGetBoolean(key, value))
 					{
-						DebugCrash("Couldn't get boolean \"" + key + "\" (section \"" + section + "\").");
+						DebugCrash("Couldn't get boolean \"" + key + "\" (section \"" + sectionName + "\").");
 					}
 
 					mapGroup.bools.insert(std::make_pair(key, value));
@@ -188,9 +154,9 @@ void Options::load(const char *filename,
 				else if (type == OptionType::Int)
 				{
 					int value;
-					if (!keyValueFile.tryGetInteger(section, key, value))
+					if (!section.tryGetInteger(key, value))
 					{
-						DebugCrash("Couldn't get integer \"" + key + "\" (section \"" + section + "\").");
+						DebugCrash("Couldn't get integer \"" + key + "\" (section \"" + sectionName + "\").");
 					}
 
 					mapGroup.integers.insert(std::make_pair(key, value));
@@ -198,9 +164,9 @@ void Options::load(const char *filename,
 				else if (type == OptionType::Double)
 				{
 					double value;
-					if (!keyValueFile.tryGetDouble(section, key, value))
+					if (!section.tryGetDouble(key, value))
 					{
-						DebugCrash("Couldn't get double \"" + key + "\" (section \"" + section + "\").");
+						DebugCrash("Couldn't get double \"" + key + "\" (section \"" + sectionName + "\").");
 					}
 
 					mapGroup.doubles.insert(std::make_pair(key, value));
@@ -208,9 +174,9 @@ void Options::load(const char *filename,
 				else if (type == OptionType::String)
 				{
 					std::string_view value;
-					if (!keyValueFile.tryGetString(section, key, value))
+					if (!section.tryGetString(key, value))
 					{
-						DebugCrash("Couldn't get string \"" + key + "\" (section \"" + section + "\").");
+						DebugCrash("Couldn't get string \"" + key + "\" (section \"" + sectionName + "\").");
 					}
 
 					mapGroup.strings.insert(std::make_pair(key, std::string(value)));

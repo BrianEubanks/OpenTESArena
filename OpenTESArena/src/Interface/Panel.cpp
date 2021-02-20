@@ -9,34 +9,36 @@
 #include "MainMenuPanel.h"
 #include "Panel.h"
 #include "RichTextString.h"
+#include "Surface.h"
 #include "TextAlignment.h"
 #include "TextBox.h"
+#include "../Assets/ArenaPaletteName.h"
+#include "../Assets/ArenaTextureName.h"
 #include "../Game/Game.h"
 #include "../Game/Options.h"
 #include "../Math/Rect.h"
 #include "../Math/Vector2.h"
 #include "../Media/Color.h"
-#include "../Media/FontManager.h"
-#include "../Media/MusicName.h"
-#include "../Media/PaletteFile.h"
-#include "../Media/PaletteName.h"
-#include "../Media/TextureFile.h"
-#include "../Media/TextureName.h"
-#include "../Media/TextureSequenceName.h"
+#include "../Media/FontLibrary.h"
 #include "../Rendering/Renderer.h"
-#include "../Rendering/Surface.h"
 
 #include "components/vfs/manager.hpp"
 
-Panel::CursorData::CursorData(const Texture *texture, CursorAlignment alignment)
+Panel::CursorData::CursorData(TextureBuilderID textureBuilderID, PaletteID paletteID, CursorAlignment alignment)
 {
-	this->texture = texture;
+	this->textureBuilderID = textureBuilderID;
+	this->paletteID = paletteID;
 	this->alignment = alignment;
 }
 
-const Texture *Panel::CursorData::getTexture() const
+TextureBuilderID Panel::CursorData::getTextureBuilderID() const
 {
-	return this->texture;
+	return this->textureBuilderID;
+}
+
+PaletteID Panel::CursorData::getPaletteID() const
+{
+	return this->paletteID;
 }
 
 CursorAlignment Panel::CursorData::getAlignment() const
@@ -48,7 +50,7 @@ Panel::Panel(Game &game)
 	: game(game) { }
 
 Texture Panel::createTooltip(const std::string &text,
-	FontName fontName, FontManager &fontManager, Renderer &renderer)
+	FontName fontName, FontLibrary &fontLibrary, Renderer &renderer)
 {
 	const Color textColor(255, 255, 255, 255);
 	const Color backColor(32, 32, 32, 192);
@@ -61,14 +63,14 @@ Texture Panel::createTooltip(const std::string &text,
 		fontName,
 		textColor,
 		TextAlignment::Left,
-		fontManager);
+		fontLibrary);
 
 	// Create text.
-	const TextBox textBox(x, y, richText, renderer);
+	const TextBox textBox(x, y, richText, fontLibrary, renderer);
 	const Surface &textSurface = textBox.getSurface();
 
 	// Create background. Make it a little bigger than the text box.
-	const int padding = 4;
+	constexpr int padding = 4;
 	Surface background = Surface::createWithFormat(
 		textSurface.getWidth() + padding, textSurface.getHeight() + padding,
 		Renderer::DEFAULT_BPP, Renderer::DEFAULT_PIXELFORMAT);
@@ -133,8 +135,8 @@ std::unique_ptr<Panel> Panel::defaultPanel(Game &game)
 	{
 		game.setPanel<CinematicPanel>(
 			game,
-			PaletteFile::fromName(PaletteName::Default),
-			TextureFile::fromName(TextureSequenceName::OpeningScroll),
+			ArenaPaletteName::Default,
+			ArenaTextureSequenceName::OpeningScroll,
 			0.042,
 			changeToIntroStory);
 	};
@@ -142,28 +144,24 @@ std::unique_ptr<Panel> Panel::defaultPanel(Game &game)
 	auto changeToQuote = [changeToScrolling](Game &game)
 	{
 		const double secondsToDisplay = 5.0;
-		game.setPanel<ImagePanel>(
-			game,
-			PaletteFile::fromName(PaletteName::BuiltIn),
-			TextureFile::fromName(TextureName::IntroQuote),
-			secondsToDisplay,
-			changeToScrolling);
+		const std::string &textureName = ArenaTextureName::IntroQuote;
+		const std::string &paletteName = textureName;
+		game.setPanel<ImagePanel>(game, paletteName, textureName,
+			secondsToDisplay, changeToScrolling);
 	};
 
 	auto makeIntroTitlePanel = [changeToQuote, &game]()
 	{
 		const double secondsToDisplay = 5.0;
-		return std::make_unique<ImagePanel>(
-			game,
-			PaletteFile::fromName(PaletteName::BuiltIn),
-			TextureFile::fromName(TextureName::IntroTitle),
-			secondsToDisplay,
-			changeToQuote);
+		const std::string &textureName = ArenaTextureName::IntroTitle;
+		const std::string &paletteName = textureName;
+		return std::make_unique<ImagePanel>(game, paletteName, textureName,
+			secondsToDisplay, changeToQuote);
 	};
 
 	// Decide how the game starts up. If only the floppy disk data is available,
 	// then go to the splash screen. Otherwise, load the intro book video.
-	const auto &exeData = game.getMiscAssets().getExeData();
+	const auto &exeData = game.getBinaryAssetLibrary().getExeData();
 	const bool isFloppyVersion = exeData.isFloppyVersion();
 	if (!isFloppyVersion)
 	{
@@ -176,8 +174,8 @@ std::unique_ptr<Panel> Panel::defaultPanel(Game &game)
 		{
 			return std::make_unique<CinematicPanel>(
 				game,
-				PaletteFile::fromName(PaletteName::Default),
-				TextureFile::fromName(TextureSequenceName::IntroBook),
+				ArenaPaletteName::Default,
+				ArenaTextureSequenceName::IntroBook,
 				1.0 / 7.0,
 				changeToTitle);
 		};
@@ -190,10 +188,10 @@ std::unique_ptr<Panel> Panel::defaultPanel(Game &game)
 	}
 }
 
-Panel::CursorData Panel::getCurrentCursor() const
+std::optional<Panel::CursorData> Panel::getCurrentCursor() const
 {
-	// Null by default.
-	return CursorData(nullptr, CursorAlignment::TopLeft);
+	// Empty by default.
+	return std::nullopt;
 }
 
 void Panel::handleEvent(const SDL_Event &e)
@@ -218,6 +216,30 @@ void Panel::resize(int windowWidth, int windowHeight)
 Game &Panel::getGame() const
 {
 	return this->game;
+}
+
+Panel::CursorData Panel::getDefaultCursor() const
+{
+	auto &game = this->getGame();
+	auto &renderer = game.getRenderer();
+	auto &textureManager = game.getTextureManager();
+
+	const std::string &paletteFilename = ArenaPaletteName::Default;
+	const std::optional<PaletteID> paletteID = textureManager.tryGetPaletteID(paletteFilename.c_str());
+	if (!paletteID.has_value())
+	{
+		DebugCrash("Couldn't get palette ID for \"" + paletteFilename + "\".");
+	}
+
+	const std::string &textureFilename = ArenaTextureName::SwordCursor;
+	const std::optional<TextureBuilderID> textureBuilderID =
+		textureManager.tryGetTextureBuilderID(textureFilename.c_str());
+	if (!textureBuilderID.has_value())
+	{
+		DebugCrash("Couldn't get texture builder ID for \"" + textureFilename + "\".");
+	}
+
+	return CursorData(*textureBuilderID, *paletteID, CursorAlignment::TopLeft);
 }
 
 void Panel::tick(double dt)

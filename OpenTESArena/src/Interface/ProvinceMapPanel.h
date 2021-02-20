@@ -9,7 +9,8 @@
 #include "../Math/Vector2.h"
 #include "../Media/Palette.h"
 
-class Location;
+class LocationDefinition;
+class ProvinceDefinition;
 class Renderer;
 class Texture;
 class TextureManager;
@@ -32,8 +33,8 @@ private:
 	// Current is where the player is. Selected is which location (if any) has been selected.
 	enum class LocationHighlightType { Current, Selected };
 
-	static const double BLINK_PERIOD; // Duration of blink period in seconds.
-	static const double BLINK_PERIOD_PERCENT_ON; // Percentage of each period spent "on".
+	static constexpr double BLINK_PERIOD = 1.0 / 5.0; // Duration of blink period in seconds.
+	static constexpr double BLINK_PERIOD_PERCENT_ON = 0.75; // Percentage of each period spent "on".
 
 	Button<Game&, ProvinceMapPanel&> searchButton, travelButton;
 	Button<Game&, std::unique_ptr<ProvinceMapPanel::TravelData>> backToWorldMapButton;
@@ -50,8 +51,9 @@ private:
 	int getClosestLocationID(const Int2 &originalPosition) const;
 
 	// Generates the pop-up text for traveling to a given destination.
-	std::string makeTravelText(int currentLocationID, const Location &currentLocation,
-		int closestLocationID, const ProvinceMapPanel::TravelData &travelData) const;
+	std::string makeTravelText(const LocationDefinition &srcLocationDef,
+		const ProvinceDefinition &srcProvinceDef, int dstLocationIndex,
+		const ProvinceMapPanel::TravelData &travelData) const;
 
 	// Generates a text sub-panel with a parchment message.
 	std::unique_ptr<Panel> makeTextPopUp(const std::string &text) const;
@@ -65,6 +67,8 @@ private:
 
 	// Draws an icon (i.e., location or highlight) centered at the given point.
 	void drawCenteredIcon(const Texture &texture, const Int2 &point, Renderer &renderer);
+	void drawCenteredIcon(TextureBuilderID textureBuilderID, PaletteID paletteID,
+		const Int2 &point, Renderer &renderer);
 
 	// Draws the icons of all visible locations in the province.
 	void drawVisibleLocations(const std::string &backgroundFilename,
@@ -72,8 +76,9 @@ private:
 
 	// Draws a highlight icon over the given location. Useful for either the player's
 	// current location or the currently selected location for fast travel.
-	void drawLocationHighlight(const Location &location, LocationHighlightType highlightType,
-		const std::string &backgroundFilename, TextureManager &textureManager, Renderer &renderer);
+	void drawLocationHighlight(const LocationDefinition &locationDef,
+		LocationHighlightType highlightType, const std::string &backgroundFilename,
+		TextureManager &textureManager, Renderer &renderer);
 
 	// Draws the name of a location in the current province. Intended for the location
 	// closest to the mouse cursor.
@@ -91,7 +96,7 @@ public:
 	// so the province search sub-panel can call it, too.
 	void trySelectLocation(int selectedLocationID);
 
-	virtual Panel::CursorData getCurrentCursor() const override;
+	virtual std::optional<Panel::CursorData> getCurrentCursor() const override;
 	virtual void handleEvent(const SDL_Event &e) override;
 	virtual void tick(double dt) override;
 	virtual void render(Renderer &renderer) override;

@@ -1,75 +1,72 @@
 #ifndef VOXEL_UTILS_H
 #define VOXEL_UTILS_H
 
+#include <optional>
+
+#include "Coord.h"
 #include "../Math/Vector2.h"
+#include "../Math/Vector3.h"
 
-// Aliases for various coordinate systems. All of these are from a top-down perspective, like a 2D array.
-using OriginalInt2 = Int2; // +X west, +Y south (original game, origin at top right).
-using NewInt2 = Int2; // +X north, +Y east (DEPRECATE THIS EVENTUALLY IN FAVOR OF CHUNKS).
-using ChunkInt2 = Int2; // +X east, +Y south, [-inf, inf] (like a C array, origin at top left).
-using ChunkVoxelInt2 = Int2; // Same directions as chunk, [0, CHUNK_DIM-1].
-using AbsoluteChunkVoxelInt2 = Int2; // Chunk voxel multiplied by chunk coordinates, [-inf, inf].
-
-struct ChunkCoord
-{
-	ChunkInt2 chunk;
-	ChunkVoxelInt2 voxel;
-};
-
-// These are here out of desperation after many months of confusing myself.
-using NSInt = int; // + north, - south
-using SNInt = int; // + south, - north
-using EWInt = int; // + east, - west
-using WEInt = int; // + west, - east
+enum class VoxelFacing2D;
+enum class VoxelFacing3D;
 
 namespace VoxelUtils
 {
-	// Number of voxels per side on a chunk.
-	constexpr int CHUNK_DIM = 64;
-
-	// I.e., given 23, returns 64.
-	int getNextHigherChunkMultiple(int coord);
-
-	// Gets the number of chunks in each dimension required to fit the given area that's in
-	// new voxel grid space.
-	void getChunkCounts(NSInt gridWidth, EWInt gridDepth, EWInt *outChunkCountX, SNInt *outChunkCountY);
-
-	// Gets the number of chunks that are potentially visible at any given time.
-	void getPotentiallyVisibleChunkCounts(int chunkDistance, EWInt *outChunkCountX, SNInt *outChunkCountY);
-
-	// Gets chunks in an NxN pattern around the given chunk. Useful for potentially visible chunk
-	// coordinates around the camera position. Chunk distance is the distance away from the given
-	// chunk in X or Y to reach (to obtain 3x3, 5x5, etc.).
-	void getSurroundingChunks(const ChunkInt2 &chunk, int chunkDist, ChunkInt2 *outMinChunk,
-		ChunkInt2 *outMaxChunk);
+	const NewInt2 North(-1, 0);
+	const NewInt2 South(1, 0);
+	const NewInt2 East(0, -1);
+	const NewInt2 West(0, 1);
 
 	// Transformation methods for converting voxel coordinates between the original game's format
-	// (+X west, +Z south) and the new format (+X north, +Z east). This is a bi-directional
-	// conversion (i.e., it works both ways. Not exactly sure why).
-	NewInt2 originalVoxelToNewVoxel(const OriginalInt2 &voxel, NSInt gridWidth, EWInt gridDepth);
-	OriginalInt2 newVoxelToOriginalVoxel(const NewInt2 &voxel, NSInt gridWidth, EWInt gridDepth);
-	Double2 getTransformedVoxel(const Double2 &voxel, NSInt gridWidth, EWInt gridDepth);
+	// (+X west, +Z south) and the new format (+X south, +Z west). This is a bi-directional
+	// conversion (i.e., it works both ways).
+	NewInt2 originalVoxelToNewVoxel(const OriginalInt2 &voxel);
+	OriginalInt2 newVoxelToOriginalVoxel(const NewInt2 &voxel);
+	Double2 getTransformedVoxel(const Double2 &voxel);
+
+	// Gets the voxel a point is in.
+	VoxelInt3 pointToVoxel(const VoxelDouble3 &point);
+	VoxelInt2 pointToVoxel(const VoxelDouble2 &point);
 
 	// Converts a voxel from chunk space to new voxel grid space.
-	NewInt2 chunkVoxelToNewVoxel(const ChunkInt2 &chunk, const ChunkVoxelInt2 &voxel,
-		NSInt gridWidth, EWInt gridDepth);
-
-	// Converts a voxel from chunk space to absolute chunk voxel space.
-	AbsoluteChunkVoxelInt2 chunkVoxelToAbsoluteChunkVoxel(const ChunkInt2 &chunk,
-		const ChunkVoxelInt2 &voxel);
+	NewDouble3 chunkPointToNewPoint(const ChunkInt2 &chunk, const VoxelDouble3 &point);
+	NewDouble2 chunkPointToNewPoint(const ChunkInt2 &chunk, const VoxelDouble2 &point);
+	NewInt3 chunkVoxelToNewVoxel(const ChunkInt2 &chunk, const VoxelInt3 &voxel);
+	NewDouble3 coordToNewPoint(const CoordDouble3 &coord);
+	NewDouble2 coordToNewPoint(const CoordDouble2 &coord);
+	NewInt3 coordToNewVoxel(const CoordInt3 &coord);
+	NewInt2 chunkVoxelToNewVoxel(const ChunkInt2 &chunk, const VoxelInt2 &voxel);
 
 	// Converts a voxel from new voxel grid space to chunk voxel space.
-	ChunkCoord newVoxelToChunkVoxel(const NewInt2 &voxel, NSInt gridWidth, EWInt gridDepth);
+	CoordDouble3 newPointToCoord(const NewDouble3 &point);
+	CoordDouble2 newPointToCoord(const NewDouble2 &point);
+	CoordInt3 newVoxelToCoord(const NewInt3 &voxel);
+	CoordInt2 newVoxelToCoord(const NewInt2 &voxel);
+
+	// Converts a voxel from level definition space to chunk voxel space.
+	CoordInt2 levelVoxelToCoord(const LevelInt2 &voxel);
 
 	// Gets the chunk that a new voxel would be in.
-	ChunkInt2 newVoxelToChunk(const NewInt2 &voxel, NSInt gridWidth, EWInt gridDepth);
+	ChunkInt2 newVoxelToChunk(const NewInt2 &voxel);
 
-	// Converts a voxel from new voxel space to absolute chunk voxel space.
-	AbsoluteChunkVoxelInt2 newVoxelToAbsoluteChunkVoxel(const NewInt2 &voxel,
-		NSInt gridWidth, EWInt gridDepth);
+	// Wraps a voxel coordinate so it stays within the chunk range.
+	VoxelInt2 wrapVoxelCoord(const VoxelInt2 &voxel);
 
-	// Converts a voxel from absolute chunk voxel space to chunk voxel space.
-	ChunkCoord absoluteChunkVoxelToChunkVoxel(const AbsoluteChunkVoxelInt2 &voxel);
+	// Adds half of a voxel to the voxel coordinate to get its center point.
+	Double2 getVoxelCenter(const Int2 &voxel);
+
+	// Gets the normal associated with a voxel facing.
+	Double3 getNormal(VoxelFacing2D facing);
+
+	// Converts between 2D and 3D specializations of voxel facings.
+	VoxelFacing3D convertFaceTo3D(VoxelFacing2D facing);
+	std::optional<VoxelFacing2D> tryConvertFaceTo2D(VoxelFacing3D facing);
+
+	// Gets voxel coordinates in an inclusive NxN pattern around the given voxel. 'Distance' is
+	// the number of voxels away from the given voxel to reach (to obtain 3x3, 5x5, etc.). Does not
+	// clamp within any specified range.
+	void getSurroundingVoxels(const VoxelInt3 &voxel, int distance, VoxelInt3 *outMinVoxel, VoxelInt3 *outMaxVoxel);
+	void getSurroundingVoxels(const VoxelInt2 &voxel, int distance, VoxelInt2 *outMinVoxel, VoxelInt2 *outMaxVoxel);
 }
 
 #endif

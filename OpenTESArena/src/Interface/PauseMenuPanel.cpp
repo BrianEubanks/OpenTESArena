@@ -12,7 +12,11 @@
 #include "RichTextString.h"
 #include "TextAlignment.h"
 #include "TextBox.h"
-#include "../Entities/CharacterClass.h"
+#include "Texture.h"
+#include "../Assets/ArenaPaletteName.h"
+#include "../Assets/ArenaTextureName.h"
+#include "../Entities/CharacterClassDefinition.h"
+#include "../Entities/CharacterClassLibrary.h"
 #include "../Entities/Player.h"
 #include "../Game/GameData.h"
 #include "../Game/Game.h"
@@ -21,17 +25,12 @@
 #include "../Math/Vector2.h"
 #include "../Media/AudioManager.h"
 #include "../Media/Color.h"
-#include "../Media/FontManager.h"
+#include "../Media/FontLibrary.h"
 #include "../Media/FontName.h"
-#include "../Media/MusicName.h"
-#include "../Media/PaletteFile.h"
-#include "../Media/PaletteName.h"
 #include "../Media/PortraitFile.h"
-#include "../Media/TextureFile.h"
 #include "../Media/TextureManager.h"
-#include "../Media/TextureName.h"
+#include "../Rendering/ArenaRenderUtils.h"
 #include "../Rendering/Renderer.h"
-#include "../Rendering/Texture.h"
 
 PauseMenuPanel::PauseMenuPanel(Game &game)
 	: Panel(game)
@@ -41,14 +40,15 @@ PauseMenuPanel::PauseMenuPanel(Game &game)
 		const int x = 17;
 		const int y = 154;
 
+		const auto &fontLibrary = game.getFontLibrary();
 		const RichTextString richText(
 			game.getGameData().getPlayer().getFirstName(),
 			FontName::Char,
 			Color(215, 121, 8),
 			TextAlignment::Left,
-			game.getFontManager());
+			fontLibrary);
 
-		return std::make_unique<TextBox>(x, y, richText, game.getRenderer());
+		return std::make_unique<TextBox>(x, y, richText, fontLibrary, game.getRenderer());
 	}();
 
 	this->musicTextBox = [&game]()
@@ -58,14 +58,15 @@ PauseMenuPanel::PauseMenuPanel(Game &game)
 		const std::string text = std::to_string(static_cast<int>(
 			std::round(game.getOptions().getAudio_MusicVolume() * 100.0)));
 
+		const auto &fontLibrary = game.getFontLibrary();
 		const RichTextString richText(
 			text,
 			FontName::Arena,
 			Color(12, 73, 16),
 			TextAlignment::Center,
-			game.getFontManager());
+			fontLibrary);
 
-		return std::make_unique<TextBox>(center, richText, game.getRenderer());
+		return std::make_unique<TextBox>(center, richText, fontLibrary, game.getRenderer());
 	}();
 
 	this->soundTextBox = [&game]()
@@ -75,31 +76,32 @@ PauseMenuPanel::PauseMenuPanel(Game &game)
 		const std::string text = std::to_string(static_cast<int>(
 			std::round(game.getOptions().getAudio_SoundVolume() * 100.0)));
 
+		const auto &fontLibrary = game.getFontLibrary();
 		const RichTextString richText(
 			text,
 			FontName::Arena,
 			Color(12, 73, 16),
 			TextAlignment::Center,
-			game.getFontManager());
+			fontLibrary);
 
-		return std::make_unique<TextBox>(center, richText, game.getRenderer());
+		return std::make_unique<TextBox>(center, richText, fontLibrary, game.getRenderer());
 	}();
 
 	this->optionsTextBox = [&game]()
 	{
 		const Int2 center(234, 95);
 
+		const auto &fontLibrary = game.getFontLibrary();
 		const RichTextString richText(
 			"OPTIONS",
 			FontName::Arena,
 			Color(215, 158, 4),
 			TextAlignment::Center,
-			game.getFontManager());
+			fontLibrary);
 
 		const TextBox::ShadowData shadowData(Color(101, 77, 24), Int2(-1, 1));
-
 		return std::make_unique<TextBox>(
-			center, richText, &shadowData, game.getRenderer());
+			center, richText, &shadowData, fontLibrary, game.getRenderer());
 	}();
 
 	this->loadButton = []()
@@ -135,8 +137,20 @@ PauseMenuPanel::PauseMenuPanel(Game &game)
 		{
 			game.setGameData(nullptr);
 			game.setPanel<MainMenuPanel>(game);
-			game.setMusic(MusicName::PercIntro);
+
+			const MusicLibrary &musicLibrary = game.getMusicLibrary();
+			const MusicDefinition *musicDef = musicLibrary.getRandomMusicDefinition(
+				MusicDefinition::Type::MainMenu, game.getRandom());
+
+			if (musicDef == nullptr)
+			{
+				DebugLogWarning("Missing main menu music.");
+			}
+
+			AudioManager &audioManager = game.getAudioManager();
+			audioManager.setMusic(musicDef);
 		};
+
 		return Button<Game&>(x, y, 65, 29, function);
 	}();
 
@@ -266,15 +280,16 @@ void PauseMenuPanel::updateMusicText(double volume)
 
 		const RichTextString &oldRichText = this->musicTextBox->getRichText();
 
+		const auto &fontLibrary = this->getGame().getFontLibrary();
 		const RichTextString richText(
 			std::to_string(displayedVolume),
 			oldRichText.getFontName(),
 			oldRichText.getColor(),
 			oldRichText.getAlignment(),
-			this->getGame().getFontManager());
+			fontLibrary);
 
 		return std::make_unique<TextBox>(
-			center, richText, this->getGame().getRenderer());
+			center, richText, fontLibrary, this->getGame().getRenderer());
 	}();
 }
 
@@ -288,27 +303,22 @@ void PauseMenuPanel::updateSoundText(double volume)
 
 		const RichTextString &oldRichText = this->soundTextBox->getRichText();
 		
+		const auto &fontLibrary = this->getGame().getFontLibrary();
 		const RichTextString richText(
 			std::to_string(displayedVolume),
 			oldRichText.getFontName(),
 			oldRichText.getColor(),
 			oldRichText.getAlignment(),
-			this->getGame().getFontManager());
+			fontLibrary);
 
 		return std::make_unique<TextBox>(
-			center, richText, this->getGame().getRenderer());
+			center, richText, fontLibrary, this->getGame().getRenderer());
 	}();
 }
 
-Panel::CursorData PauseMenuPanel::getCurrentCursor() const
+std::optional<Panel::CursorData> PauseMenuPanel::getCurrentCursor() const
 {
-	auto &game = this->getGame();
-	auto &renderer = game.getRenderer();
-	auto &textureManager = game.getTextureManager();
-	const auto &texture = textureManager.getTexture(
-		TextureFile::fromName(TextureName::SwordCursor),
-		PaletteFile::fromName(PaletteName::Default), renderer);
-	return CursorData(&texture, CursorAlignment::TopLeft);
+	return this->getDefaultCursor();
 }
 
 void PauseMenuPanel::handleEvent(const SDL_Event &e)
@@ -382,54 +392,106 @@ void PauseMenuPanel::render(Renderer &renderer)
 	// Clear full screen.
 	renderer.clear();
 
-	// Set palette.
-	auto &textureManager = this->getGame().getTextureManager();
-	textureManager.setPalette(PaletteFile::fromName(PaletteName::Default));
-
 	// Draw pause background.
-	const auto &pauseBackground = textureManager.getTexture(
-		TextureFile::fromName(TextureName::PauseBackground), renderer);
-	renderer.drawOriginal(pauseBackground);
+	auto &textureManager = this->getGame().getTextureManager();
+	const std::string &pauseBackgroundPaletteFilename = ArenaPaletteName::Default;
+	const std::optional<PaletteID> pauseBackgroundPaletteID =
+		textureManager.tryGetPaletteID(pauseBackgroundPaletteFilename.c_str());
+	if (!pauseBackgroundPaletteID.has_value())
+	{
+		DebugLogError("Couldn't get pause background palette ID for \"" + pauseBackgroundPaletteFilename + "\".");
+		return;
+	}
+
+	const std::string &pauseBackgroundTextureFilename = ArenaTextureName::PauseBackground;
+	const std::optional<TextureBuilderID> pauseBackgroundTextureBuilderID =
+		textureManager.tryGetTextureBuilderID(pauseBackgroundTextureFilename.c_str());
+	if (!pauseBackgroundTextureBuilderID.has_value())
+	{
+		DebugLogError("Couldn't get pause background texture builder ID for \"" + pauseBackgroundTextureFilename + "\".");
+		return;
+	}
+
+	renderer.drawOriginal(*pauseBackgroundTextureBuilderID, *pauseBackgroundPaletteID, textureManager);
 
 	// Draw game world interface below the pause menu.
-	const auto &gameInterface = textureManager.getTexture(
-		TextureFile::fromName(TextureName::GameWorldInterface), renderer);
-	renderer.drawOriginal(gameInterface, 0,
-		Renderer::ORIGINAL_HEIGHT - gameInterface.getHeight());
+	const PaletteID gameWorldInterfacePaletteID = *pauseBackgroundPaletteID;
+	const std::string &gameWorldInterfaceTextureFilename = ArenaTextureName::GameWorldInterface;
+	const std::optional<TextureBuilderID> gameWorldInterfaceTextureBuilderID =
+		textureManager.tryGetTextureBuilderID(gameWorldInterfaceTextureFilename.c_str());
+	if (!gameWorldInterfaceTextureBuilderID.has_value())
+	{
+		DebugLogError("Couldn't get game world interface texture builder ID for \"" + gameWorldInterfaceTextureFilename + "\".");
+		return;
+	}
+
+	const TextureBuilder &gameWorldInterfaceTextureBuilder =
+		textureManager.getTextureBuilderHandle(*gameWorldInterfaceTextureBuilderID);
+	renderer.drawOriginal(*gameWorldInterfaceTextureBuilderID, gameWorldInterfacePaletteID,
+		0, ArenaRenderUtils::SCREEN_HEIGHT - gameWorldInterfaceTextureBuilder.getHeight(), textureManager);
 
 	// Draw player portrait.
 	const auto &player = this->getGame().getGameData().getPlayer();
-	const auto &headsFilename = PortraitFile::getHeads(
-		player.getGenderName(), player.getRaceID(), true);
-	const auto &portrait = textureManager.getTextures(
-		headsFilename, renderer).at(player.getPortraitID());
-	const auto &status = textureManager.getTextures(
-		TextureFile::fromName(TextureName::StatusGradients), renderer).at(0);
-	renderer.drawOriginal(status, 14, 166);
-	renderer.drawOriginal(portrait, 14, 166);
+	const PaletteID portraitPaletteID = gameWorldInterfacePaletteID;
+	const TextureBuilderID portraitTextureBuilderID = [this, &textureManager, &player]()
+	{
+		const std::string &headsFilename = PortraitFile::getHeads(player.isMale(), player.getRaceID(), true);
+		const std::optional<TextureBuilderIdGroup> portraitTextureBuilderIDs =
+			textureManager.tryGetTextureBuilderIDs(headsFilename.c_str());
+		if (!portraitTextureBuilderIDs.has_value())
+		{
+			DebugCrash("Couldn't get portrait texture builder IDs for \"" + headsFilename + "\".");
+		}
+
+		return portraitTextureBuilderIDs->getID(player.getPortraitID());
+	}();
+
+	const PaletteID statusPaletteID = portraitPaletteID;
+	const TextureBuilderID statusTextureBuilderID = [this, &textureManager]()
+	{
+		const std::string &statusFilename = ArenaTextureName::StatusGradients;
+		const std::optional<TextureBuilderIdGroup> statusTextureBuilderIDs =
+			textureManager.tryGetTextureBuilderIDs(statusFilename.c_str());
+		if (!statusTextureBuilderIDs.has_value())
+		{
+			DebugCrash("Couldn't get status texture builder IDs for \"" + statusFilename + "\".");
+		}
+
+		return statusTextureBuilderIDs->getID(0);
+	}();
+
+	renderer.drawOriginal(statusTextureBuilderID, statusPaletteID, 14, 166, textureManager);
+	renderer.drawOriginal(portraitTextureBuilderID, portraitPaletteID, 14, 166, textureManager);
 
 	// If the player's class can't use magic, show the darkened spell icon.
-	if (!player.getCharacterClass().canCastMagic())
+	const auto &charClassLibrary = this->getGame().getCharacterClassLibrary();
+	const auto &charClassDef = charClassLibrary.getDefinition(player.getCharacterClassDefID());
+	if (!charClassDef.canCastMagic())
 	{
-		const auto &nonMagicIcon = textureManager.getTexture(
-			TextureFile::fromName(TextureName::NoSpell), renderer);
-		renderer.drawOriginal(nonMagicIcon, 91, 177);
+		const PaletteID nonMagicIconPaletteID = gameWorldInterfacePaletteID;
+		const std::string &nonMagicIconTextureFilename = ArenaTextureName::NoSpell;
+		const std::optional<TextureBuilderID> nonMagicIconTextureBuilderID =
+			textureManager.tryGetTextureBuilderID(nonMagicIconTextureFilename.c_str());
+		if (!nonMagicIconTextureBuilderID.has_value())
+		{
+			DebugCrash("Couldn't get non-magic icon texture builder ID for \"" + nonMagicIconTextureFilename + "\".");
+		}
+
+		renderer.drawOriginal(*nonMagicIconTextureBuilderID, nonMagicIconPaletteID, 91, 177, textureManager);
 	}
 
 	// Cover up the detail slider with a new options background.
-	Texture optionsBackground = Texture::generate(Texture::PatternType::Custom1,
-		this->optionsButton.getWidth(), this->optionsButton.getHeight(),
-		textureManager, renderer);
-	renderer.drawOriginal(optionsBackground, this->optionsButton.getX(),
-		this->optionsButton.getY());
+	Texture optionsBackground = TextureUtils::generate(TextureUtils::PatternType::Custom1,
+		this->optionsButton.getWidth(), this->optionsButton.getHeight(), textureManager, renderer);
+	renderer.drawOriginal(optionsBackground, this->optionsButton.getX(), this->optionsButton.getY());
 
 	// Draw text: player's name, music volume, sound volume, options.
-	renderer.drawOriginal(this->playerNameTextBox->getTexture(),
-		this->playerNameTextBox->getX(), this->playerNameTextBox->getY());
-	renderer.drawOriginal(this->musicTextBox->getTexture(),
-		this->musicTextBox->getX(), this->musicTextBox->getY());
-	renderer.drawOriginal(this->soundTextBox->getTexture(),
-		this->soundTextBox->getX(), this->soundTextBox->getY());
-	renderer.drawOriginal(this->optionsTextBox->getTexture(),
-		this->optionsTextBox->getX() - 1, this->optionsTextBox->getY());
+	renderer.drawOriginal(this->playerNameTextBox->getTexture(), this->playerNameTextBox->getX(),
+		this->playerNameTextBox->getY());
+	renderer.drawOriginal(this->musicTextBox->getTexture(), this->musicTextBox->getX(),
+		this->musicTextBox->getY());
+	renderer.drawOriginal(this->soundTextBox->getTexture(), this->soundTextBox->getX(),
+		this->soundTextBox->getY());
+	renderer.drawOriginal(this->optionsTextBox->getTexture(), this->optionsTextBox->getX() - 1,
+		this->optionsTextBox->getY());
 }

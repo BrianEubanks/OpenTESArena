@@ -140,7 +140,6 @@ private:
 	static const std::string WINDOW_MODE_NAME;
 	static const std::string LETTERBOX_MODE_NAME;
 	static const std::string MODERN_INTERFACE_NAME;
-	static const std::string PARALLAX_SKY_NAME;
 	static const std::string RENDER_THREADS_MODE_NAME;
 	static const std::string RESOLUTION_SCALE_NAME;
 	static const std::string VERTICAL_FOV_NAME;
@@ -186,6 +185,15 @@ private:
 	// Regenerates all option text boxes in the current tab.
 	void updateVisibleOptionTextBoxes();
 
+	// Draws return buttons and tabs.
+	void drawReturnButtonsAndTabs(Renderer &renderer);
+
+	// Draws the text of the buttons.
+	void drawText(Renderer &renderer);
+
+	// Draw each option's text.
+	void drawTextOfOptions(Renderer &renderer);
+
 	// Draws description for an option. Not using mouse tooltips because they
 	// get in the way of seeing what an option's value is.
 	void drawDescription(const std::string &text, Renderer &renderer);
@@ -193,7 +201,7 @@ public:
 	OptionsPanel(Game &game);
 	virtual ~OptionsPanel() = default;
 
-	virtual Panel::CursorData getCurrentCursor() const override;
+	virtual std::optional<Panel::CursorData> getCurrentCursor() const override;
 	virtual void handleEvent(const SDL_Event &e) override;
 	virtual void render(Renderer &renderer) override;
 };

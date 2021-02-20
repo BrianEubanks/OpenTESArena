@@ -5,17 +5,24 @@
 
 #include "SDL.h"
 
+#include "ArenaRenderUtils.h"
 #include "Renderer.h"
-#include "Surface.h"
+#include "RenderInitSettings.h"
+#include "SdlUiRenderer.h"
+#include "SoftwareRenderer.h"
+#include "../Entities/EntityAnimationInstance.h"
 #include "../Interface/CursorAlignment.h"
+#include "../Interface/Surface.h"
 #include "../Math/Constants.h"
 #include "../Math/MathUtils.h"
 #include "../Math/Rect.h"
 #include "../Media/Color.h"
+#include "../Media/TextureManager.h"
 #include "../Utilities/Platform.h"
 #include "../World/VoxelGrid.h"
 
 #include "components/debug/Debug.h"
+#include "components/utilities/String.h"
 
 Renderer::DisplayMode::DisplayMode(int width, int height, int refreshRate)
 {
@@ -26,18 +33,36 @@ Renderer::DisplayMode::DisplayMode(int width, int height, int refreshRate)
 
 Renderer::ProfilerData::ProfilerData()
 {
-	this->width = 0;
-	this->height = 0;
-	this->potentiallyVisFlatCount = 0;
-	this->visFlatCount = 0;
-	this->visLightCount = 0;
+	this->width = -1;
+	this->height = -1;
+	this->threadCount = -1;
+	this->potentiallyVisFlatCount = -1;
+	this->visFlatCount = -1;
+	this->visLightCount = -1;
 	this->frameTime = 0.0;
+}
+
+void Renderer::ProfilerData::init(int width, int height, int threadCount, int potentiallyVisFlatCount,
+	int visFlatCount, int visLightCount, double frameTime)
+{
+	this->width = width;
+	this->height = height;
+	this->threadCount = threadCount;
+	this->potentiallyVisFlatCount = potentiallyVisFlatCount;
+	this->visFlatCount = visFlatCount;
+	this->visLightCount = visLightCount;
+	this->frameTime = frameTime;
+}
+
+void Renderer::TextureInstance::init(TextureBuilderID textureBuilderID, PaletteID paletteID, Texture &&texture)
+{
+	this->textureBuilderID = textureBuilderID;
+	this->paletteID = paletteID;
+	this->texture = std::move(texture);
 }
 
 const char *Renderer::DEFAULT_RENDER_SCALE_QUALITY = "nearest";
 const char *Renderer::DEFAULT_TITLE = "OpenTESArena";
-const int Renderer::ORIGINAL_WIDTH = 320;
-const int Renderer::ORIGINAL_HEIGHT = 200;
 const int Renderer::DEFAULT_BPP = 32;
 const uint32_t Renderer::DEFAULT_PIXELFORMAT = SDL_PIXELFORMAT_ARGB8888;
 
@@ -64,42 +89,59 @@ Renderer::~Renderer()
 SDL_Renderer *Renderer::createRenderer(SDL_Window *window)
 {
 	// Automatically choose the best driver.
-	const int bestDriver = -1;
+	constexpr int bestDriver = -1;
 
-	SDL_Renderer *rendererContext = SDL_CreateRenderer(
-		window, bestDriver, SDL_RENDERER_ACCELERATED);
-	DebugAssertMsg(rendererContext != nullptr, "SDL_CreateRenderer");
+	SDL_Renderer *rendererContext = SDL_CreateRenderer(window, bestDriver, SDL_RENDERER_ACCELERATED);
+	if (rendererContext == nullptr)
+	{
+		DebugLogError("Couldn't create SDL_Renderer with driver \"" + std::to_string(bestDriver) + "\".");
+		return nullptr;
+	}
+
+	SDL_RendererInfo rendererInfo;
+	if (SDL_GetRendererInfo(rendererContext, &rendererInfo) < 0)
+	{
+		DebugLogError("Couldn't get SDL_RendererInfo (error: " + std::string(SDL_GetError()) + ").");
+		return nullptr;
+	}
+
+	const std::string rendererInfoFlags = String::toHexString(rendererInfo.flags);
+	DebugLog("Created renderer \"" + std::string(rendererInfo.name) + "\" (flags: 0x" + rendererInfoFlags + ").");
 
 	// Set pixel interpolation hint.
-	SDL_bool status = SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY,
-		Renderer::DEFAULT_RENDER_SCALE_QUALITY);
+	const SDL_bool status = SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, Renderer::DEFAULT_RENDER_SCALE_QUALITY);
 	if (status != SDL_TRUE)
 	{
-		DebugLogWarning("Could not set interpolation hint.");
+		DebugLogWarning("Couldn't set SDL rendering interpolation hint.");
 	}
 
 	// Set the size of the render texture to be the size of the whole screen
 	// (it automatically scales otherwise).
-	SDL_Surface *nativeSurface = SDL_GetWindowSurface(window);
+	const SDL_Surface *nativeSurface = SDL_GetWindowSurface(window);
 
 	// If this fails, we might not support hardware accelerated renderers for some reason
 	// (such as with Linux), so we retry with software.
-	if (!nativeSurface)
+	if (nativeSurface == nullptr)
 	{
 		DebugLogWarning("Failed to init accelerated SDL_Renderer, trying software fallback.");
-
 		SDL_DestroyRenderer(rendererContext);
 
 		rendererContext = SDL_CreateRenderer(window, bestDriver, SDL_RENDERER_SOFTWARE);
-		DebugAssertMsg(rendererContext != nullptr, "SDL_CreateRenderer software");
+		if (rendererContext == nullptr)
+		{
+			DebugLogError("Couldn't create software fallback SDL_Renderer.");
+			return nullptr;
+		}
 
 		nativeSurface = SDL_GetWindowSurface(window);
+		if (nativeSurface == nullptr)
+		{
+			DebugLogError("Couldn't get software fallback SDL_Window surface.");
+			return nullptr;
+		}
 	}
 
-	DebugAssertMsg(nativeSurface != nullptr, "SDL_GetWindowSurface");
-
-	// Set the device-independent resolution for rendering (i.e., the 
-	// "behind-the-scenes" resolution).
+	// Set the device-independent resolution for rendering (i.e., the "behind-the-scenes" resolution).
 	SDL_RenderSetLogicalSize(rendererContext, nativeSurface->w, nativeSurface->h);
 
 	return rendererContext;
@@ -111,6 +153,109 @@ int Renderer::makeRendererDimension(int value, double resolutionScale)
 	// imprecise resolution scale doesn't result in off-by-one resolutions (like 1079p).
 	return std::max(static_cast<int>(
 		std::round(static_cast<double>(value) * resolutionScale)), 1);
+}
+
+std::optional<int> Renderer::tryGetTextureInstanceIndex(TextureBuilderID textureBuilderID, PaletteID paletteID) const
+{
+	const auto iter = std::find_if(this->textureInstances.begin(), this->textureInstances.end(),
+		[textureBuilderID, paletteID](const TextureInstance &textureInst)
+	{
+		return (textureInst.textureBuilderID == textureBuilderID) && (textureInst.paletteID == paletteID);
+	});
+
+	if (iter != this->textureInstances.end())
+	{
+		return static_cast<int>(std::distance(this->textureInstances.begin(), iter));
+	}
+	else
+	{
+		return std::nullopt;
+	}
+}
+
+void Renderer::addTextureInstance(TextureBuilderID textureBuilderID, PaletteID paletteID,
+	const TextureManager &textureManager)
+{
+	// Texture should not already exist.
+	DebugAssert(this->tryGetTextureInstanceIndex(textureBuilderID, paletteID) == std::nullopt);
+
+	const TextureBuilder &textureBuilder = textureManager.getTextureBuilderHandle(textureBuilderID);
+	const int width = textureBuilder.getWidth();
+	const int height = textureBuilder.getHeight();
+	Texture texture = this->createTexture(Renderer::DEFAULT_PIXELFORMAT, SDL_TEXTUREACCESS_STREAMING, width, height);
+	if (texture.get() == nullptr)
+	{
+		DebugCrash("Couldn't create texture (texture builder ID: " + std::to_string(textureBuilderID) +
+			", palette ID: " + std::to_string(paletteID) + ", dimensions: " + std::to_string(width) + "x" +
+			std::to_string(height) + ").");
+	}
+
+	// Prepare destination texture for writing.
+	uint32_t *dstTexels;
+	int pitch;
+	if (SDL_LockTexture(texture.get(), nullptr, reinterpret_cast<void**>(&dstTexels), &pitch) != 0)
+	{
+		DebugCrash("Couldn't lock SDL texture (dimensions: " + std::to_string(width) +
+			"x" + std::to_string(height) + ").");
+	}
+
+	const TextureBuilder::Type textureBuilderType = textureBuilder.getType();
+	if (textureBuilderType == TextureBuilder::Type::Paletted)
+	{
+		// Convert 8-bit to 32-bit.
+		const TextureBuilder::PalettedTexture &srcTexture = textureBuilder.getPaletted();
+		const Buffer2D<uint8_t> &srcTexels = srcTexture.texels;
+		const Palette &palette = textureManager.getPaletteHandle(paletteID);
+		std::transform(srcTexels.get(), srcTexels.end(), dstTexels,
+			[&palette](const uint8_t srcTexel)
+		{
+			return palette[srcTexel].toARGB();
+		});
+	}
+	else if (textureBuilderType == TextureBuilder::Type::TrueColor)
+	{
+		// Copy from 32-bit.
+		const TextureBuilder::TrueColorTexture &srcTexture = textureBuilder.getTrueColor();
+		const Buffer2D<uint32_t> &srcTexels = srcTexture.texels;
+		std::copy(srcTexels.get(), srcTexels.end(), dstTexels);
+	}
+	else
+	{
+		DebugNotImplementedMsg(std::to_string(static_cast<int>(textureBuilderType)));
+	}
+
+	SDL_UnlockTexture(texture.get());
+
+	// Set alpha transparency on.
+	if (SDL_SetTextureBlendMode(texture.get(), SDL_BLENDMODE_BLEND) != 0)
+	{
+		DebugLogError("Couldn't set SDL texture alpha blending.");
+	}
+
+	TextureInstance textureInst;
+	textureInst.init(textureBuilderID, paletteID, std::move(texture));
+	this->textureInstances.emplace_back(std::move(textureInst));
+}
+
+const Texture *Renderer::getOrAddTextureInstance(TextureBuilderID textureBuilderID, PaletteID paletteID,
+	const TextureManager &textureManager)
+{
+	std::optional<int> textureInstIndex = this->tryGetTextureInstanceIndex(textureBuilderID, paletteID);
+	if (!textureInstIndex.has_value())
+	{
+		this->addTextureInstance(textureBuilderID, paletteID, textureManager);
+		textureInstIndex = this->tryGetTextureInstanceIndex(textureBuilderID, paletteID);
+	}
+
+	if (textureInstIndex.has_value())
+	{
+		const TextureInstance &textureInst = this->textureInstances[*textureInstIndex];
+		return &textureInst.texture;
+	}
+	else
+	{
+		return nullptr;
+	}
 }
 
 double Renderer::getLetterboxAspect() const
@@ -170,8 +315,8 @@ int Renderer::getViewHeight() const
 	const int screenHeight = this->getWindowDimensions().y;
 
 	// Ratio of the view height and window height in 320x200.
-	const double viewWindowRatio = static_cast<double>(ORIGINAL_HEIGHT - 53) /
-		static_cast<double>(ORIGINAL_HEIGHT);
+	const double viewWindowRatio = static_cast<double>(ArenaRenderUtils::SCREEN_HEIGHT - 53) /
+		static_cast<double>(ArenaRenderUtils::SCREEN_HEIGHT);
 
 	// Actual view height to use.
 	const int viewHeight = this->fullGameWindow ? screenHeight :
@@ -182,9 +327,9 @@ int Renderer::getViewHeight() const
 
 SDL_Rect Renderer::getLetterboxDimensions() const
 {
-	const SDL_Surface *nativeSurface = SDL_GetWindowSurface(this->window);
-	const double nativeAspect = static_cast<double>(nativeSurface->w) /
-		static_cast<double>(nativeSurface->h);
+	const Int2 windowDims = this->getWindowDimensions();
+	const double nativeAspect = static_cast<double>(windowDims.x) /
+		static_cast<double>(windowDims.y);
 	const double letterboxAspect = this->getLetterboxAspect();
 
 	// Compare the two aspects to decide what the letterbox dimensions are.
@@ -194,31 +339,31 @@ SDL_Rect Renderer::getLetterboxDimensions() const
 		SDL_Rect rect;
 		rect.x = 0;
 		rect.y = 0;
-		rect.w = nativeSurface->w;
-		rect.h = nativeSurface->h;
+		rect.w = windowDims.x;
+		rect.h = windowDims.y;
 		return rect;
 	}
 	else if (nativeAspect > letterboxAspect)
 	{
 		// Native window is wider = empty left and right.
-		int subWidth = static_cast<int>(std::ceil(
-			static_cast<double>(nativeSurface->h) * letterboxAspect));
+		const int subWidth = static_cast<int>(std::ceil(
+			static_cast<double>(windowDims.y) * letterboxAspect));
 		SDL_Rect rect;
-		rect.x = (nativeSurface->w - subWidth) / 2;
+		rect.x = (windowDims.x - subWidth) / 2;
 		rect.y = 0;
 		rect.w = subWidth;
-		rect.h = nativeSurface->h;
+		rect.h = windowDims.y;
 		return rect;
 	}
 	else
 	{
 		// Native window is taller = empty top and bottom.
-		int subHeight = static_cast<int>(std::ceil(
-			static_cast<double>(nativeSurface->w) / letterboxAspect));
+		const int subHeight = static_cast<int>(std::ceil(
+			static_cast<double>(windowDims.x) / letterboxAspect));
 		SDL_Rect rect;
 		rect.x = 0;
-		rect.y = (nativeSurface->h - subHeight) / 2;
-		rect.w = nativeSurface->w;
+		rect.y = (windowDims.y - subHeight) / 2;
+		rect.w = windowDims.x;
 		rect.h = subHeight;
 		return rect;
 	}
@@ -247,18 +392,19 @@ const Renderer::ProfilerData &Renderer::getProfilerData() const
 }
 
 bool Renderer::getEntityRayIntersection(const EntityManager::EntityVisibilityData &visData,
-	int flatIndex, const Double3 &entityForward, const Double3 &entityRight,
-	const Double3 &entityUp, double entityWidth, double entityHeight, const Double3 &rayPoint,
-	const Double3 &rayDirection, bool pixelPerfect, Double3 *outHitPoint) const
+	const Double3 &entityForward, const Double3 &entityRight, const Double3 &entityUp,
+	double entityWidth, double entityHeight, const Double3 &rayPoint, const Double3 &rayDirection,
+	bool pixelPerfect, const Palette &palette, Double3 *outHitPoint) const
 {
-	DebugAssert(this->softwareRenderer.isInited());
+	DebugAssert(this->renderer3D->isInited());
 	const Entity &entity = *visData.entity;
 
 	// Do a ray test to see if the ray intersects.
-	if (MathUtils::rayPlaneIntersection(rayPoint, rayDirection, visData.flatPosition,
+	const NewDouble3 absoluteFlatPosition = VoxelUtils::coordToNewPoint(visData.flatPosition);
+	if (MathUtils::rayPlaneIntersection(rayPoint, rayDirection, absoluteFlatPosition,
 		entityForward, outHitPoint))
 	{
-		const Double3 diff = (*outHitPoint) - visData.flatPosition;
+		const Double3 diff = (*outHitPoint) - absoluteFlatPosition;
 
 		// Get the texture coordinates. It's okay if they are outside the entity.
 		const Double2 uv(
@@ -268,9 +414,9 @@ bool Renderer::getEntityRayIntersection(const EntityManager::EntityVisibilityDat
 		// See if the ray successfully hit a point on the entity, and that point is considered
 		// selectable (i.e. it's not transparent).
 		bool isSelected;
-		const bool withinEntity = this->softwareRenderer.tryGetEntitySelectionData(uv, flatIndex,
-			visData.keyframe.getTextureID(), visData.anglePercent, visData.stateType,
-			pixelPerfect, &isSelected);
+		const bool withinEntity = this->renderer3D->tryGetEntitySelectionData(uv,
+			entity.getRenderID(), visData.stateIndex, visData.angleIndex, visData.keyframeIndex,
+			pixelPerfect, palette, &isSelected);
 
 		return withinEntity && isSelected;
 	}
@@ -284,7 +430,7 @@ bool Renderer::getEntityRayIntersection(const EntityManager::EntityVisibilityDat
 Double3 Renderer::screenPointToRay(double xPercent, double yPercent, const Double3 &cameraDirection,
 	double fovY, double aspect) const
 {
-	return SoftwareRenderer::screenPointToRay(xPercent, yPercent, cameraDirection, fovY, aspect);
+	return this->renderer3D->screenPointToRay(xPercent, yPercent, cameraDirection, fovY, aspect);
 }
 
 Int2 Renderer::nativeToOriginal(const Int2 &nativePoint) const
@@ -303,8 +449,8 @@ Int2 Renderer::nativeToOriginal(const Int2 &nativePoint) const
 	const double letterboxYPercent = static_cast<double>(letterboxPoint.y) /
 		static_cast<double>(letterbox.h);
 
-	const double originalWidthReal = static_cast<double>(Renderer::ORIGINAL_WIDTH);
-	const double originalHeightReal = static_cast<double>(Renderer::ORIGINAL_HEIGHT);
+	const double originalWidthReal = static_cast<double>(ArenaRenderUtils::SCREEN_WIDTH);
+	const double originalHeightReal = static_cast<double>(ArenaRenderUtils::SCREEN_HEIGHT);
 
 	const Int2 originalPoint(
 		static_cast<int>(originalWidthReal * letterboxXPercent),
@@ -328,9 +474,9 @@ Int2 Renderer::originalToNative(const Int2 &originalPoint) const
 {
 	// From original point to letterbox point.
 	const double originalXPercent = static_cast<double>(originalPoint.x) /
-		static_cast<double>(Renderer::ORIGINAL_WIDTH);
+		static_cast<double>(ArenaRenderUtils::SCREEN_WIDTH);
 	const double originalYPercent = static_cast<double>(originalPoint.y) /
-		static_cast<double>(Renderer::ORIGINAL_HEIGHT);
+		static_cast<double>(ArenaRenderUtils::SCREEN_HEIGHT);
 
 	const SDL_Rect letterbox = this->getLetterboxDimensions();
 
@@ -395,12 +541,16 @@ Texture Renderer::createTextureFromSurface(const Surface &surface)
 	return texture;
 }
 
-void Renderer::init(int width, int height, WindowMode windowMode, int letterboxMode)
+bool Renderer::init(int width, int height, WindowMode windowMode, int letterboxMode,
+	RendererSystemType2D systemType2D, RendererSystemType3D systemType3D)
 {
 	DebugLog("Initializing.");
 
-	DebugAssert(width > 0);
-	DebugAssert(height > 0);
+	if ((width <= 0) || (height <= 0))
+	{
+		DebugLogError("Invalid renderer dimensions \"" + std::to_string(width) + "x" + std::to_string(height) + "\"");
+		return false;
+	}
 
 	this->letterboxMode = letterboxMode;
 
@@ -430,10 +580,20 @@ void Renderer::init(int width, int height, WindowMode windowMode, int letterboxM
 		return SDL_CreateWindow(title, position, position, width, height, flags);
 	}();
 
-	DebugAssertMsg(this->window != nullptr, "SDL_CreateWindow");
+	if (this->window == nullptr)
+	{
+		DebugLogError("Couldn't create SDL_Window (dimensions: " + std::to_string(width) + "x" + std::to_string(height) +
+			", window mode: " + std::to_string(static_cast<int>(windowMode)) + ").");
+		return false;
+	}
 
 	// Initialize renderer context.
 	this->renderer = Renderer::createRenderer(this->window);
+	if (this->renderer == nullptr)
+	{
+		DebugLogError("Couldn't create SDL_Renderer.");
+		return false;
+	}
 
 	// Initialize display modes list for the current window.
 	const int displayIndex = SDL_GetWindowDisplayIndex(this->window);
@@ -448,32 +608,67 @@ void Renderer::init(int width, int height, WindowMode windowMode, int letterboxM
 			// know how to do that for all possible displays out there.
 			if (mode.format == SDL_PIXELFORMAT_RGB888)
 			{
-				this->displayModes.push_back(DisplayMode(mode.w, mode.h, mode.refresh_rate));
+				this->displayModes.emplace_back(DisplayMode(mode.w, mode.h, mode.refresh_rate));
 			}
 		}
 	}
 
 	// Use window dimensions, just in case it's fullscreen and the given width and
 	// height are ignored.
-	Int2 windowDimensions = this->getWindowDimensions();
+	const Int2 windowDimensions = this->getWindowDimensions();
 
 	// Initialize native frame buffer.
 	this->nativeTexture = this->createTexture(Renderer::DEFAULT_PIXELFORMAT,
 		SDL_TEXTUREACCESS_TARGET, windowDimensions.x, windowDimensions.y);
-	DebugAssertMsg(this->nativeTexture.get() != nullptr,
-		"Couldn't create native frame buffer, " + std::string(SDL_GetError()));
+	if (this->nativeTexture.get() == nullptr)
+	{
+		DebugLogError("Couldn't create SDL_Texture frame buffer (error: " + std::string(SDL_GetError()) + ").");
+		return false;
+	}
+
+	// Initialize 2D renderer resources.
+	this->renderer2D = [systemType2D]() -> std::unique_ptr<RendererSystem2D>
+	{
+		if (systemType2D == RendererSystemType2D::SDL2)
+		{
+			return std::make_unique<SdlUiRenderer>();
+		}
+		else
+		{
+			DebugLogError("Unrecognized 2D renderer system type \"" +
+				std::to_string(static_cast<int>(systemType2D)) + "\".");
+			return nullptr;
+		}
+	}();
+
+	// Initialize 3D renderer resources.
+	this->renderer3D = [systemType3D]() -> std::unique_ptr<RendererSystem3D>
+	{
+		if (systemType3D == RendererSystemType3D::SoftwareClassic)
+		{
+			return std::make_unique<SoftwareRenderer>();
+		}
+		else
+		{
+			DebugLogError("Unrecognized 3D renderer system type \"" +
+				std::to_string(static_cast<int>(systemType3D)) + "\".");
+			return nullptr;
+		}
+	}();
 
 	// Don't initialize the game world buffer until the 3D renderer is initialized.
 	DebugAssert(this->gameWorldTexture.get() == nullptr);
 	this->fullGameWindow = false;
+
+	return true;
 }
 
 void Renderer::resize(int width, int height, double resolutionScale, bool fullGameWindow)
 {
-	// The window's dimensions are resized automatically. The renderer's are not.
-	const SDL_Surface *nativeSurface = SDL_GetWindowSurface(this->window);
-	DebugAssertMsg(nativeSurface->w == width, "Mismatched resize widths.");
-	DebugAssertMsg(nativeSurface->h == height, "Mismatched resize heights.");
+	// The window's dimensions are resized automatically by SDL. The renderer's are not.
+	const Int2 windowDims = this->getWindowDimensions();
+	DebugAssertMsg(windowDims.x == width, "Mismatched resize widths.");
+	DebugAssertMsg(windowDims.y == height, "Mismatched resize heights.");
 
 	SDL_RenderSetLogicalSize(this->renderer, width, height);
 
@@ -486,13 +681,12 @@ void Renderer::resize(int width, int height, double resolutionScale, bool fullGa
 	this->fullGameWindow = fullGameWindow;
 
 	// Rebuild the 3D renderer if initialized.
-	if (this->softwareRenderer.isInited())
+	if (this->renderer3D->isInited())
 	{
 		// Height of the game world view in pixels. Determined by whether the game 
 		// interface is visible or not.
 		const int viewHeight = this->getViewHeight();
 
-		// Calculate renderer dimensions.
 		const int renderWidth = Renderer::makeRendererDimension(width, resolutionScale);
 		const int renderHeight = Renderer::makeRendererDimension(viewHeight, resolutionScale);
 
@@ -502,8 +696,7 @@ void Renderer::resize(int width, int height, double resolutionScale, bool fullGa
 		DebugAssertMsg(this->gameWorldTexture.get() != nullptr,
 			"Couldn't recreate game world texture, " + std::string(SDL_GetError()));
 
-		// Resize 3D renderer.
-		this->softwareRenderer.resize(renderWidth, renderHeight);
+		this->renderer3D->resize(renderWidth, renderHeight);
 	}
 }
 
@@ -577,90 +770,111 @@ void Renderer::initializeWorldRendering(double resolutionScale, bool fullGameWin
 		"Couldn't create game world texture, " + std::string(SDL_GetError()));
 
 	// Initialize 3D rendering.
-	this->softwareRenderer.init(renderWidth, renderHeight, renderThreadsMode);
+	RenderInitSettings initSettings;
+	initSettings.init(renderWidth, renderHeight, renderThreadsMode);
+	this->renderer3D->init(initSettings);
 }
 
 void Renderer::setRenderThreadsMode(int mode)
 {
-	DebugAssert(this->softwareRenderer.isInited());
-	this->softwareRenderer.setRenderThreadsMode(mode);
+	DebugAssert(this->renderer3D->isInited());
+	this->renderer3D->setRenderThreadsMode(mode);
 }
 
-void Renderer::addLight(int id, const Double3 &point, const Double3 &color, double intensity)
+bool Renderer::tryCreateVoxelTexture(const TextureAssetReference &textureAssetRef, TextureManager &textureManager)
 {
-	DebugAssert(this->softwareRenderer.isInited());
-	this->softwareRenderer.addLight(id, point, color, intensity);
+	return this->renderer3D->tryCreateVoxelTexture(textureAssetRef, textureManager);
 }
 
-void Renderer::updateLight(int id, const Double3 *point, const Double3 *color, 
-	const double *intensity)
+bool Renderer::tryCreateEntityTexture(const TextureAssetReference &textureAssetRef, TextureManager &textureManager)
 {
-	DebugAssert(this->softwareRenderer.isInited());
-	this->softwareRenderer.updateLight(id, point, color, intensity);
+	return this->renderer3D->tryCreateEntityTexture(textureAssetRef, textureManager);
+}
+
+bool Renderer::tryCreateSkyTexture(const TextureAssetReference &textureAssetRef, TextureManager &textureManager)
+{
+	return this->renderer3D->tryCreateSkyTexture(textureAssetRef, textureManager);
+}
+
+bool Renderer::tryCreateUiTexture(const TextureAssetReference &textureAssetRef, TextureManager &textureManager)
+{
+	return this->renderer2D->tryCreateUiTexture(textureAssetRef, textureManager);
+}
+
+void Renderer::freeVoxelTexture(const TextureAssetReference &textureAssetRef)
+{
+	this->renderer3D->freeVoxelTexture(textureAssetRef);
+}
+
+void Renderer::freeEntityTexture(const TextureAssetReference &textureAssetRef)
+{
+	this->renderer3D->freeEntityTexture(textureAssetRef);
+}
+
+void Renderer::freeSkyTexture(const TextureAssetReference &textureAssetRef)
+{
+	this->renderer3D->freeSkyTexture(textureAssetRef);
+}
+
+void Renderer::freeUiTexture(const TextureAssetReference &textureAssetRef)
+{
+	this->renderer2D->freeUiTexture(textureAssetRef);
 }
 
 void Renderer::setFogDistance(double fogDistance)
 {
-	DebugAssert(this->softwareRenderer.isInited());
-	this->softwareRenderer.setFogDistance(fogDistance);
+	this->renderer3D->setFogDistance(fogDistance);
 }
 
-void Renderer::setVoxelTexture(int id, const uint8_t *srcTexels, const Palette &palette)
+EntityRenderID Renderer::makeEntityRenderID()
 {
-	DebugAssert(this->softwareRenderer.isInited());
-	this->softwareRenderer.setVoxelTexture(id, srcTexels, palette);
+	DebugAssert(this->renderer3D->isInited());
+	return this->renderer3D->makeEntityRenderID();
 }
 
-void Renderer::addFlatTexture(int flatIndex, EntityAnimationData::StateType stateType,
-	int angleID, bool flipped, const uint8_t *srcTexels, int width, int height,
-	const Palette &palette)
+void Renderer::setFlatTextures(EntityRenderID entityRenderID, const EntityAnimationDefinition &animDef,
+	const EntityAnimationInstance &animInst, bool isPuddle, TextureManager &textureManager)
 {
-	DebugAssert(this->softwareRenderer.isInited());
-	this->softwareRenderer.addFlatTexture(flatIndex, stateType, angleID, flipped,
-		srcTexels, width, height, palette);
+	DebugAssert(this->renderer3D->isInited());
+	this->renderer3D->setFlatTextures(entityRenderID, animDef, animInst, isPuddle, textureManager);
 }
 
-void Renderer::addChasmTexture(VoxelDefinition::ChasmData::Type chasmType, const uint8_t *colors,
+void Renderer::addChasmTexture(ArenaTypes::ChasmType chasmType, const uint8_t *colors,
 	int width, int height, const Palette &palette)
 {
-	DebugAssert(this->softwareRenderer.isInited());
-	this->softwareRenderer.addChasmTexture(chasmType, colors, width, height, palette);
+	DebugAssert(this->renderer3D->isInited());
+	this->renderer3D->addChasmTexture(chasmType, colors, width, height, palette);
 }
 
-void Renderer::setDistantSky(const DistantSky &distantSky, const Palette &palette)
+void Renderer::setDistantSky(const DistantSky &distantSky, const Palette &palette,
+	TextureManager &textureManager)
 {
-	DebugAssert(this->softwareRenderer.isInited());
-	this->softwareRenderer.setDistantSky(distantSky, palette);
+	DebugAssert(this->renderer3D->isInited());
+	this->renderer3D->setDistantSky(distantSky, palette, textureManager);
 }
 
 void Renderer::setSkyPalette(const uint32_t *colors, int count)
 {
-	DebugAssert(this->softwareRenderer.isInited());
-	this->softwareRenderer.setSkyPalette(colors, count);
+	DebugAssert(this->renderer3D->isInited());
+	this->renderer3D->setSkyPalette(colors, count);
 }
 
-void Renderer::setNightLightsActive(bool active)
+void Renderer::setNightLightsActive(bool active, const Palette &palette)
 {
-	DebugAssert(this->softwareRenderer.isInited());
-	this->softwareRenderer.setNightLightsActive(active);
+	DebugAssert(this->renderer3D->isInited());
+	this->renderer3D->setNightLightsActive(active, palette);
 }
 
-void Renderer::removeLight(int id)
+void Renderer::clearTexturesAndEntityRenderIDs()
 {
-	DebugAssert(this->softwareRenderer.isInited());
-	this->softwareRenderer.removeLight(id);
-}
-
-void Renderer::clearTextures()
-{
-	DebugAssert(this->softwareRenderer.isInited());
-	this->softwareRenderer.clearTextures();
+	DebugAssert(this->renderer3D->isInited());
+	this->renderer3D->clearTexturesAndEntityRenderIDs();
 }
 
 void Renderer::clearDistantSky()
 {
-	DebugAssert(this->softwareRenderer.isInited());
-	this->softwareRenderer.clearDistantSky();
+	DebugAssert(this->renderer3D->isInited());
+	this->renderer3D->clearDistantSky();
 }
 
 void Renderer::clear(const Color &color)
@@ -740,15 +954,13 @@ void Renderer::fillOriginalRect(const Color &color, int x, int y, int w, int h)
 	SDL_RenderFillRect(this->renderer, &rect.getRect());
 }
 
-void Renderer::renderWorld(const Double3 &eye, const Double3 &forward, double fovY, double ambient,
-	double daytimePercent, double chasmAnimPercent, double latitude, bool parallaxSky,
-	bool nightLightsAreActive, bool isExterior, bool playerHasLight, int chunkDistance,
-	double ceilingHeight, const std::vector<LevelData::DoorState> &openDoors,
-	const std::vector<LevelData::FadeState> &fadingVoxels, const VoxelGrid &voxelGrid,
-	const EntityManager &entityManager)
+void Renderer::renderWorld(const CoordDouble3 &eye, const Double3 &forward, double fovY, double ambient,
+	double daytimePercent, double chasmAnimPercent, double latitude, bool nightLightsAreActive, bool isExterior,
+	bool playerHasLight, int chunkDistance, double ceilingHeight, const LevelData &levelData,
+	const EntityDefinitionLibrary &entityDefLibrary, const Palette &palette)
 {
 	// The 3D renderer must be initialized.
-	DebugAssert(this->softwareRenderer.isInited());
+	DebugAssert(this->renderer3D->isInited());
 	
 	// Lock the game world texture and give the pixel pointer to the software renderer.
 	// - Supposedly this is faster than SDL_UpdateTexture(). In any case, there's one
@@ -757,25 +969,21 @@ void Renderer::renderWorld(const Double3 &eye, const Double3 &forward, double fo
 	int gameWorldPitch;
 	int status = SDL_LockTexture(this->gameWorldTexture.get(), nullptr,
 		reinterpret_cast<void**>(&gameWorldPixels), &gameWorldPitch);
-	DebugAssertMsg(status == 0, "Couldn't lock game world texture, " +
-		std::string(SDL_GetError()));
+	DebugAssertMsg(status == 0, "Couldn't lock game world texture, " + std::string(SDL_GetError()));
 
 	// Render the game world to the game world frame buffer.
 	const auto startTime = std::chrono::high_resolution_clock::now();
-	this->softwareRenderer.render(eye, forward, fovY, ambient, daytimePercent, chasmAnimPercent,
-		latitude, parallaxSky, nightLightsAreActive, isExterior, playerHasLight, chunkDistance,
-		ceilingHeight, openDoors, fadingVoxels, voxelGrid, entityManager, gameWorldPixels);
+	this->renderer3D->render(eye, forward, fovY, ambient, daytimePercent, chasmAnimPercent, latitude,
+		nightLightsAreActive, isExterior, playerHasLight, chunkDistance, ceilingHeight, levelData,
+		entityDefLibrary, palette, gameWorldPixels);
 	const auto endTime = std::chrono::high_resolution_clock::now();
+	const double frameTime = static_cast<double>((endTime - startTime).count()) / static_cast<double>(std::nano::den);
 
 	// Update profiler stats.
-	const SoftwareRenderer::ProfilerData swProfilerData = this->softwareRenderer.getProfilerData();
-	this->profilerData.width = swProfilerData.width;
-	this->profilerData.height = swProfilerData.height;
-	this->profilerData.potentiallyVisFlatCount = swProfilerData.potentiallyVisFlatCount;
-	this->profilerData.visFlatCount = swProfilerData.visFlatCount;
-	this->profilerData.visLightCount = swProfilerData.visLightCount;
-	this->profilerData.frameTime = static_cast<double>((endTime - startTime).count()) /
-		static_cast<double>(std::nano::den);
+	const RendererSystem3D::ProfilerData swProfilerData = this->renderer3D->getProfilerData();
+	this->profilerData.init(swProfilerData.width, swProfilerData.height, swProfilerData.threadCount,
+		swProfilerData.potentiallyVisFlatCount, swProfilerData.visFlatCount, swProfilerData.visLightCount,
+		frameTime);
 
 	// Update the game world texture with the new ARGB8888 pixels.
 	SDL_UnlockTexture(this->gameWorldTexture.get());
@@ -786,14 +994,19 @@ void Renderer::renderWorld(const Double3 &eye, const Double3 &forward, double fo
 	this->draw(this->gameWorldTexture, 0, 0, screenWidth, viewHeight);
 }
 
-void Renderer::drawCursor(const Texture &cursor, CursorAlignment alignment,
-	const Int2 &mousePosition, double scale)
+void Renderer::drawCursor(TextureBuilderID textureBuilderID, PaletteID paletteID, CursorAlignment alignment,
+	const Int2 &mousePosition, double scale, const TextureManager &textureManager)
 {
-	// The caller should check for any null textures.
-	DebugAssert(cursor.get() != nullptr);
+	const Texture *cursor = this->getOrAddTextureInstance(textureBuilderID, paletteID, textureManager);
+	if (cursor == nullptr)
+	{
+		DebugLogError("Couldn't draw cursor (texture builder ID: " + std::to_string(textureBuilderID) +
+			", palette ID: " + std::to_string(paletteID) + ").");
+		return;
+	}
 
-	const int scaledWidth = static_cast<int>(std::round(cursor.getWidth() * scale));
-	const int scaledHeight = static_cast<int>(std::round(cursor.getHeight() * scale));
+	const int scaledWidth = static_cast<int>(std::round(cursor->getWidth() * scale));
+	const int scaledHeight = static_cast<int>(std::round(cursor->getHeight() * scale));
 
 	// Get the magnitude to offset the cursor's coordinates by.
 	const Int2 cursorOffset = [alignment, scaledWidth, scaledHeight]()
@@ -841,11 +1054,9 @@ void Renderer::drawCursor(const Texture &cursor, CursorAlignment alignment,
 		return Int2(xOffset, yOffset);
 	}();
 
-	this->draw(cursor,
-		mousePosition.x - cursorOffset.x,
-		mousePosition.y - cursorOffset.y,
-		scaledWidth,
-		scaledHeight);
+	const int cursorX = mousePosition.x - cursorOffset.x;
+	const int cursorY = mousePosition.y - cursorOffset.y;
+	this->draw(*cursor, cursorX, cursorY, scaledWidth, scaledHeight);
 }
 
 void Renderer::draw(const Texture &texture, int x, int y, int w, int h)
@@ -909,6 +1120,42 @@ void Renderer::drawOriginal(const Texture &texture)
 	this->drawOriginal(texture, 0, 0);
 }
 
+void Renderer::drawOriginal(TextureBuilderID textureBuilderID, PaletteID paletteID, int x, int y, int w, int h,
+	const TextureManager &textureManager)
+{
+	const Texture *texture = this->getOrAddTextureInstance(textureBuilderID, paletteID, textureManager);
+	if (texture == nullptr)
+	{
+		DebugLogError("Couldn't get texture (texture builder ID: " + std::to_string(textureBuilderID) +
+			", palette ID: " + std::to_string(paletteID) + ").");
+		return;
+	}
+
+	this->drawOriginal(*texture, x, y, w, h);
+}
+
+void Renderer::drawOriginal(TextureBuilderID textureBuilderID, PaletteID paletteID, int x, int y,
+	const TextureManager &textureManager)
+{
+	const Texture *texture = this->getOrAddTextureInstance(textureBuilderID, paletteID, textureManager);
+	if (texture == nullptr)
+	{
+		DebugLogError("Couldn't get texture (texture builder ID: " + std::to_string(textureBuilderID) +
+			", palette ID: " + std::to_string(paletteID) + ").");
+		return;
+	}
+
+	this->drawOriginal(*texture, x, y);
+}
+
+void Renderer::drawOriginal(TextureBuilderID textureBuilderID, PaletteID paletteID,
+	const TextureManager &textureManager)
+{
+	constexpr int x = 0;
+	constexpr int y = 0;
+	this->drawOriginal(textureBuilderID, paletteID, x, y, textureManager);
+}
+
 void Renderer::drawOriginalClipped(const Texture &texture, const Rect &srcRect, const Rect &dstRect)
 {
 	SDL_SetRenderTarget(this->renderer, this->nativeTexture.get());
@@ -924,6 +1171,27 @@ void Renderer::drawOriginalClipped(const Texture &texture, const Rect &srcRect, 
 {
 	this->drawOriginalClipped(texture, srcRect, 
 		Rect(x, y, srcRect.getWidth(), srcRect.getHeight()));
+}
+
+void Renderer::drawOriginalClipped(TextureBuilderID textureBuilderID, PaletteID paletteID, const Rect &srcRect,
+	const Rect &dstRect, const TextureManager &textureManager)
+{
+	const Texture *texture = this->getOrAddTextureInstance(textureBuilderID, paletteID, textureManager);
+	if (texture == nullptr)
+	{
+		DebugLogError("Couldn't get texture (texture builder ID: " + std::to_string(textureBuilderID) +
+			", palette ID: " + std::to_string(paletteID) + ").");
+		return;
+	}
+
+	this->drawOriginalClipped(*texture, srcRect, dstRect);
+}
+
+void Renderer::drawOriginalClipped(TextureBuilderID textureBuilderID, PaletteID paletteID, const Rect &srcRect,
+	int x, int y, const TextureManager &textureManager)
+{
+	this->drawOriginalClipped(textureBuilderID, paletteID, srcRect,
+		Rect(x, y, srcRect.getWidth(), srcRect.getHeight()), textureManager);
 }
 
 void Renderer::fill(const Texture &texture)

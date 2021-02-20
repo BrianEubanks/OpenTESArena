@@ -4,20 +4,16 @@
 #include "GameWorldPanel.h"
 #include "MainQuestSplashPanel.h"
 #include "TextAlignment.h"
+#include "Texture.h"
 #include "../Assets/ExeData.h"
 #include "../Game/Game.h"
 #include "../Game/GameData.h"
 #include "../Math/Random.h"
 #include "../Media/FontName.h"
-#include "../Media/MusicName.h"
 #include "../Media/MusicUtils.h"
-#include "../Media/PaletteFile.h"
-#include "../Media/PaletteName.h"
-#include "../Media/TextureFile.h"
 #include "../Media/TextureManager.h"
-#include "../Media/TextureName.h"
+#include "../Rendering/ArenaRenderUtils.h"
 #include "../Rendering/Renderer.h"
-#include "../Rendering/Texture.h"
 
 #include "components/utilities/String.h"
 
@@ -28,33 +24,35 @@ MainQuestSplashPanel::MainQuestSplashPanel(Game &game, int provinceID)
 	{
 		const std::string text = [&game, provinceID]()
 		{
-			const auto &miscAssets = game.getMiscAssets();
+			const auto &binaryAssetLibrary = game.getBinaryAssetLibrary();
+			const auto &textAssetLibrary = game.getTextAssetLibrary();
 
 			// @todo: maybe don't split these two strings in the first place. And convert
 			// the carriage return to a newline instead of removing it.
-			const std::pair<std::string, std::string> &pair = [provinceID, &miscAssets]()
+			const std::pair<std::string, std::string> &pair =
+				[provinceID, &binaryAssetLibrary, &textAssetLibrary]()
 			{
-				const auto &exeData = miscAssets.getExeData();
+				const auto &exeData = binaryAssetLibrary.getExeData();
 				const int index = exeData.travel.staffDungeonSplashIndices.at(provinceID);
-				return miscAssets.getDungeonTxtDungeons().at(index);
+				return textAssetLibrary.getDungeonTxtDungeons().at(index);
 			}();
 
 			return pair.first + '\n' + pair.second;
 		}();
 
 		const int lineSpacing = 1;
-
+		const auto &fontLibrary = game.getFontLibrary();
 		const RichTextString richText(
 			text,
 			FontName::Teeny,
 			Color(195, 158, 0),
 			TextAlignment::Center,
 			lineSpacing,
-			game.getFontManager());
+			fontLibrary);
 		
-		const int x = (Renderer::ORIGINAL_WIDTH / 2) - (richText.getDimensions().x / 2);
+		const int x = (ArenaRenderUtils::SCREEN_WIDTH / 2) - (richText.getDimensions().x / 2);
 		const int y = 133;
-		return std::make_unique<TextBox>(x, y, richText, game.getRenderer());
+		return std::make_unique<TextBox>(x, y, richText, fontLibrary, game.getRenderer());
 	}();
 
 	this->exitButton = []()
@@ -66,9 +64,18 @@ MainQuestSplashPanel::MainQuestSplashPanel(Game &game, int provinceID)
 		auto function = [](Game &game)
 		{
 			// Choose random dungeon music and enter game world.
-			Random random;
-			const MusicName musicName = MusicUtils::getDungeonMusicName(random);
-			game.setMusic(musicName);
+			const MusicLibrary &musicLibrary = game.getMusicLibrary();
+			const MusicDefinition *musicDef = musicLibrary.getRandomMusicDefinition(
+				MusicDefinition::Type::Dungeon, game.getRandom());
+
+			if (musicDef == nullptr)
+			{
+				DebugLogWarning("Missing dungeon music.");
+			}
+
+			AudioManager &audioManager = game.getAudioManager();
+			audioManager.setMusic(musicDef);
+
 			game.setPanel<GameWorldPanel>(game);
 		};
 		return Button<Game&>(x, y, width, height, function);
@@ -77,21 +84,15 @@ MainQuestSplashPanel::MainQuestSplashPanel(Game &game, int provinceID)
 	// Get the filename of the staff dungeon splash image.
 	this->splashFilename = [&game, provinceID]()
 	{
-		const auto &exeData = game.getMiscAssets().getExeData();
+		const auto &exeData = game.getBinaryAssetLibrary().getExeData();
 		const int index = exeData.travel.staffDungeonSplashIndices.at(provinceID);
 		return String::toUppercase(exeData.travel.staffDungeonSplashes.at(index));
 	}();
 }
 
-Panel::CursorData MainQuestSplashPanel::getCurrentCursor() const
+std::optional<Panel::CursorData> MainQuestSplashPanel::getCurrentCursor() const
 {
-	auto &game = this->getGame();
-	auto &renderer = game.getRenderer();
-	auto &textureManager = game.getTextureManager();
-	const auto &texture = textureManager.getTexture(
-		TextureFile::fromName(TextureName::SwordCursor),
-		PaletteFile::fromName(PaletteName::Default), renderer);
-	return CursorData(&texture, CursorAlignment::TopLeft);
+	return this->getDefaultCursor();
 }
 
 void MainQuestSplashPanel::handleEvent(const SDL_Event &e)
@@ -118,17 +119,27 @@ void MainQuestSplashPanel::render(Renderer &renderer)
 	// Clear full screen.
 	renderer.clear();
 
-	// Set palette.
-	auto &game = this->getGame();
-	auto &textureManager = game.getTextureManager();
-	textureManager.setPalette(PaletteFile::fromName(PaletteName::Default));
-
 	// Draw staff dungeon splash image.
-	const auto &splashImage = textureManager.getTexture(
-		this->splashFilename, PaletteFile::fromName(PaletteName::BuiltIn), renderer);
-	renderer.drawOriginal(splashImage);
+	auto &textureManager = this->getGame().getTextureManager();
+	const std::string &textureName = this->splashFilename;
+	const std::string &paletteName = textureName;
+	const std::optional<PaletteID> splashPaletteID = textureManager.tryGetPaletteID(paletteName.c_str());
+	if (!splashPaletteID.has_value())
+	{
+		DebugLogError("Couldn't get splash palette ID for \"" + paletteName + "\".");
+		return;
+	}
+
+	const std::optional<TextureBuilderID> splashTextureBuilderID =
+		textureManager.tryGetTextureBuilderID(textureName.c_str());
+	if (!splashTextureBuilderID.has_value())
+	{
+		DebugLogError("Couldn't get splash texture builder ID for \"" + textureName + "\".");
+		return;
+	}
+
+	renderer.drawOriginal(*splashTextureBuilderID, *splashPaletteID, textureManager);
 
 	// Draw text.
-	renderer.drawOriginal(this->textBox->getTexture(),
-		this->textBox->getX(), this->textBox->getY());
+	renderer.drawOriginal(this->textBox->getTexture(), this->textBox->getX(), this->textBox->getY());
 }

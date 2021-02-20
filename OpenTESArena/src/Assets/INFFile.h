@@ -8,6 +8,10 @@
 #include <unordered_map>
 #include <vector>
 
+#include "ArenaTypes.h"
+
+#include "components/dos/DOSUtils.h"
+
 // An .INF file contains definitions of what the IDs in a .MIF file point to. These 
 // are mostly texture IDs, but also text IDs and sound IDs telling which voxels have 
 // which kinds of triggers, etc..
@@ -20,19 +24,15 @@ public:
 		std::string filename;
 		std::optional<int> setIndex; // Index into .SET file texture (if any).
 
-		VoxelTextureData(const std::string &filename, int setIndex);
-		VoxelTextureData(const std::string &filename);
-		VoxelTextureData(VoxelTextureData&&) = default;
-		VoxelTextureData() = default;
+		VoxelTextureData(const char *filename, const std::optional<int> &setIndex);
+		VoxelTextureData(const char *filename);
 	};
 
 	struct FlatTextureData
 	{
 		std::string filename;
 
-		FlatTextureData(const std::string &filename);
-		FlatTextureData(FlatTextureData&&) = default;
-		FlatTextureData() = default;
+		FlatTextureData(const char *filename);
 	};
 
 	struct CeilingData
@@ -65,7 +65,7 @@ public:
 		// *ITEM value, if any. *ITEM 32 should be associated with rats, the first
 		// creature type. The highest *ITEM number is 95, although some of them past
 		// 63 might not be used (character class names, lore names, etc.).
-		std::optional<int> itemIndex;
+		std::optional<ArenaTypes::ItemIndex> itemIndex;
 
 		int yOffset; // Offsets the flat some number of pixels. Negative goes up.
 		int health; // Number of hit points.
@@ -154,25 +154,25 @@ public:
 
 	const std::vector<VoxelTextureData> &getVoxelTextures() const;
 	const std::vector<FlatTextureData> &getFlatTextures() const;
-	const int *getBoxCap(int index) const;
-	const int *getBoxSide(int index) const;
-	const int *getMenu(int index) const;
-	int getMenuIndex(int textureID) const; // Temporary hack?
+	const std::optional<int> &getBoxCap(int index) const;
+	const std::optional<int> &getBoxSide(int index) const;
+	const std::optional<int> &getMenu(int index) const;
+	std::optional<int> getMenuIndex(int textureID) const; // Temporary hack?
 	const FlatData &getFlat(int index) const;
-	const FlatData *getFlatWithItemIndex(int itemIndex) const;
-	const std::string &getSound(int index) const;
+	const FlatData *getFlatWithItemIndex(ArenaTypes::ItemIndex itemIndex) const;
+	const char *getSound(int index) const;
 	bool hasKeyIndex(int index) const;
 	bool hasRiddleIndex(int index) const;
 	bool hasTextIndex(int index) const;
 	const KeyData &getKey(int index) const;
 	const RiddleData &getRiddle(int index) const;
 	const TextData &getText(int index) const;
-	const std::string &getName() const;
-	const int *getDryChasmIndex() const;
-	const int *getLavaChasmIndex() const;
-	const int *getLevelDownIndex() const;
-	const int *getLevelUpIndex() const;
-	const int *getWetChasmIndex() const;
+	const char *getName() const;
+	const std::optional<int> &getDryChasmIndex() const;
+	const std::optional<int> &getLavaChasmIndex() const;
+	const std::optional<int> &getLevelDownIndex() const;
+	const std::optional<int> &getLevelUpIndex() const;
+	const std::optional<int> &getWetChasmIndex() const;
 	const CeilingData &getCeiling() const;
 };
 

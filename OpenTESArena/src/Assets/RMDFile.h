@@ -4,28 +4,29 @@
 #include <cstdint>
 #include <vector>
 
+#include "ArenaTypes.h"
+#include "../World/VoxelUtils.h"
+
+#include "components/utilities/Buffer2D.h"
+#include "components/utilities/BufferView2D.h"
+
 class RMDFile
 {
 private:
-	// Bytes per floor, always 8192.
-	static const int BYTES_PER_FLOOR;
+	static constexpr int BYTES_PER_FLOOR = 8192;
 
-	// Using vectors because arrays caused stack overflow warnings.
-	std::vector<uint16_t> flor, map1, map2;
+	Buffer2D<ArenaTypes::VoxelID> flor, map1, map2;
 public:
 	bool init(const char *filename);
 
-	// Constant .RMD dimensions, always 64x64.
-	static const int WIDTH;
-	static const int DEPTH;
+	static constexpr WEInt WIDTH = 64;
+	static constexpr SNInt DEPTH = WIDTH;
+	static constexpr int ELEMENTS_PER_FLOOR = BYTES_PER_FLOOR / sizeof(ArenaTypes::VoxelID);
 
-	// A function of bytes per floor.
-	static const int ELEMENTS_PER_FLOOR;
-
-	// Get voxel data for each floor. Each should be 8192 bytes.
-	const std::vector<uint16_t> &getFLOR() const;
-	const std::vector<uint16_t> &getMAP1() const;
-	const std::vector<uint16_t> &getMAP2() const;
+	// Get voxel data for each floor.
+	BufferView2D<const ArenaTypes::VoxelID> getFLOR() const;
+	BufferView2D<const ArenaTypes::VoxelID> getMAP1() const;
+	BufferView2D<const ArenaTypes::VoxelID> getMAP2() const;
 };
 
 #endif

@@ -4,50 +4,62 @@
 #include "../Game/Game.h"
 
 Entity::Entity()
-	: position(Double2::Zero)
+	: position(ChunkInt2::Zero, VoxelDouble2::Zero)
 {
 	this->id = EntityManager::NO_ID;
-	this->dataIndex = -1;
-	this->animation.reset();
+	this->defID = EntityManager::NO_DEF_ID;
+	this->renderID = EntityManager::NO_RENDER_ID;
+	this->animInst.reset();
 }
 
-void Entity::init(int dataIndex)
+void Entity::init(EntityDefID defID, const EntityAnimationInstance &animInst)
 {
 	DebugAssert(this->id != EntityManager::NO_ID);
-	this->dataIndex = dataIndex;
+	this->defID = defID;
+	this->animInst = animInst;
 }
 
-int Entity::getID() const
+EntityID Entity::getID() const
 {
 	return this->id;
 }
 
-int Entity::getDataIndex() const
+EntityDefID Entity::getDefinitionID() const
 {
-	return this->dataIndex;
+	return this->defID;
 }
 
-const Double2 &Entity::getPosition() const
+EntityRenderID Entity::getRenderID() const
+{
+	return this->renderID;
+}
+
+const CoordDouble2 &Entity::getPosition() const
 {
 	return this->position;
 }
 
-EntityAnimationData::Instance &Entity::getAnimation()
+EntityAnimationInstance &Entity::getAnimInstance()
 {
-	return this->animation;
+	return this->animInst;
 }
 
-const EntityAnimationData::Instance &Entity::getAnimation() const
+const EntityAnimationInstance &Entity::getAnimInstance() const
 {
-	return this->animation;
+	return this->animInst;
 }
 
-void Entity::setID(int id)
+void Entity::setID(EntityID id)
 {
 	this->id = id;
 }
 
-void Entity::setPosition(const Double2 &position, EntityManager &entityManager,
+void Entity::setRenderID(EntityRenderID id)
+{
+	this->renderID = id;
+}
+
+void Entity::setPosition(const CoordDouble2 &position, EntityManager &entityManager,
 	const VoxelGrid &voxelGrid)
 {
 	this->position = position;
@@ -59,26 +71,32 @@ void Entity::reset()
 	// Don't change the entity type -- the entity manager doesn't change an allocation's entity
 	// group between lifetimes.
 	this->id = EntityManager::NO_ID;
-	this->position = Double2::Zero;
-	this->dataIndex = -1;
-	this->animation.reset();
+	this->defID = EntityManager::NO_DEF_ID;
+	this->renderID = EntityManager::NO_RENDER_ID;
+	this->position = CoordDouble2(ChunkInt2::Zero, VoxelDouble2::Zero);
+	this->animInst.reset();
 }
 
 void Entity::tick(Game &game, double dt)
 {
-	// Get entity animation data.
-	const EntityAnimationData &animationData = [this, &game]() -> const EntityAnimationData&
+	const EntityAnimationDefinition &animDef = [this, &game]() -> const EntityAnimationDefinition&
 	{
-		const WorldData &worldData = game.getGameData().getWorldData();
+		const WorldData &worldData = game.getGameData().getActiveWorld();
 		const LevelData &levelData = worldData.getActiveLevel();
 		const EntityManager &entityManager = levelData.getEntityManager();
-		const EntityDefinition *entityDef = entityManager.getEntityDef(this->getDataIndex());
-		DebugAssert(entityDef != nullptr);
-
-		return entityDef->getAnimationData();
+		const EntityDefinitionLibrary &entityDefLibrary = game.getEntityDefinitionLibrary();
+		const EntityDefinition &entityDef = entityManager.getEntityDef(
+			this->getDefinitionID(), entityDefLibrary);
+		return entityDef.getAnimDef();
 	}();
 
+	// Get current animation keyframe from instance, so we know which anim def state to get.
+	const int stateIndex = this->animInst.getStateIndex();
+	const EntityAnimationDefinition::State &animDefState = animDef.getState(stateIndex);
+
 	// Animate.
-	auto &animation = this->getAnimation();
-	animation.tick(dt, animationData);
+	// @todo: maybe want to add an 'isRandom' bool to EntityAnimationDefinition::State so
+	// it can more closely match citizens' animations from the original game. Either that
+	// or have a separate tickRandom() method so it's more optimizable.
+	this->animInst.tick(dt, animDefState.getTotalSeconds(), animDefState.isLooping());
 }

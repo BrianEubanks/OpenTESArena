@@ -15,7 +15,7 @@ class LoadSavePanel : public Panel
 public:
 	enum class Type { Load, Save };
 private:
-	static const int SlotCount;
+	static constexpr int SlotCount = 10;
 
 	std::array<std::unique_ptr<TextBox>, 10> saveTextBoxes;
 	Button<Game&, int> confirmButton;
@@ -28,7 +28,7 @@ public:
 	LoadSavePanel(Game &game, LoadSavePanel::Type type);
 	virtual ~LoadSavePanel() = default;
 
-	virtual Panel::CursorData getCurrentCursor() const override;
+	virtual std::optional<Panel::CursorData> getCurrentCursor() const override;
 	virtual void handleEvent(const SDL_Event &e) override;
 	virtual void render(Renderer &renderer) override;
 };

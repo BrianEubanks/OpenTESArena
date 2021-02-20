@@ -14,8 +14,13 @@ enum class WeatherType;
 
 namespace WeatherUtils
 {
-	// Returns whether the given weather counts as snow.
-	bool isSnowType(WeatherType weatherType);
+	constexpr double DEFAULT_INTERIOR_FOG_DIST = 25.0; // Arbitrary.
+
+	// Helper functions for determining what category a weather type falls into.
+	bool isClear(WeatherType weatherType);
+	bool isOvercast(WeatherType weatherType);
+	bool isRain(WeatherType weatherType);
+	bool isSnow(WeatherType weatherType);
 
 	// Returns a filtered version of the given weather so that, i.e., deserts can't have snow.
 	WeatherType getFilteredWeatherType(WeatherType weatherType, ClimateType climateType);

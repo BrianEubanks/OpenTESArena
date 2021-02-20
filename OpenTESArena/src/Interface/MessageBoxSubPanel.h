@@ -5,7 +5,7 @@
 #include <vector>
 
 #include "Panel.h"
-#include "../Rendering/Texture.h"
+#include "Texture.h"
 
 class TextBox;
 
@@ -41,7 +41,7 @@ public:
 		const std::function<void(Game&)> &cancelFunction);
 	virtual ~MessageBoxSubPanel() = default;
 
-	virtual Panel::CursorData getCurrentCursor() const override;
+	virtual std::optional<Panel::CursorData> getCurrentCursor() const override;
 	virtual void handleEvent(const SDL_Event &e) override;
 	virtual void render(Renderer &renderer) override;
 };

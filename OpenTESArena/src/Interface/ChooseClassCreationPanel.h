@@ -5,7 +5,7 @@
 
 #include "Button.h"
 #include "Panel.h"
-#include "../Rendering/Texture.h"
+#include "Texture.h"
 
 // This panel is for the "How do you wish to select your class?" screen.
 
@@ -27,7 +27,7 @@ public:
 	ChooseClassCreationPanel(Game &game);
 	virtual ~ChooseClassCreationPanel() = default;
 
-	virtual Panel::CursorData getCurrentCursor() const override;
+	virtual std::optional<Panel::CursorData> getCurrentCursor() const override;
 	virtual void handleEvent(const SDL_Event &e) override;
 	virtual void render(Renderer &renderer) override;
 };

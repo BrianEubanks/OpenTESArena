@@ -22,7 +22,22 @@ namespace
 	};
 }
 
-bool WeatherUtils::isSnowType(WeatherType weatherType)
+bool WeatherUtils::isClear(WeatherType weatherType)
+{
+	return weatherType == WeatherType::Clear;
+}
+
+bool WeatherUtils::isOvercast(WeatherType weatherType)
+{
+	return (weatherType == WeatherType::Overcast) || (weatherType == WeatherType::Overcast2);
+}
+
+bool WeatherUtils::isRain(WeatherType weatherType)
+{
+	return (weatherType == WeatherType::Rain) || (weatherType == WeatherType::Rain2);
+}
+
+bool WeatherUtils::isSnow(WeatherType weatherType)
 {
 	return (weatherType == WeatherType::Snow) || (weatherType == WeatherType::SnowOvercast) ||
 		(weatherType == WeatherType::SnowOvercast2);
@@ -31,7 +46,7 @@ bool WeatherUtils::isSnowType(WeatherType weatherType)
 WeatherType WeatherUtils::getFilteredWeatherType(WeatherType weatherType, ClimateType climateType)
 {
 	// Snow in deserts is replaced by rain.
-	const bool isSnow = WeatherUtils::isSnowType(weatherType);
+	const bool isSnow = WeatherUtils::isSnow(weatherType);
 	return ((climateType == ClimateType::Desert) && isSnow) ? WeatherType::Rain : weatherType;
 }
 
@@ -44,21 +59,26 @@ Buffer<uint32_t> WeatherUtils::makeExteriorSkyPalette(WeatherType weatherType,
 	TextureManager &textureManager)
 {
 	// Get the palette name for the given weather.
-	const std::string paletteName = (weatherType == WeatherType::Clear) ? "DAYTIME.COL" : "DREARY.COL";
+	const char *paletteName = (weatherType == WeatherType::Clear) ? "DAYTIME.COL" : "DREARY.COL";
 
 	// The palettes in the data files only cover half of the day, so some added
 	// darkness is needed for the other half.
-	const Surface &palette = textureManager.getSurface(paletteName);
-	const uint32_t *pixels = static_cast<const uint32_t*>(palette.getPixels());
-	const int pixelCount = palette.getWidth() * palette.getHeight();
+	const std::optional<PaletteID> paletteID = textureManager.tryGetPaletteID(paletteName);
+	if (!paletteID.has_value())
+	{
+		DebugCrash("Couldn't get palette ID for \"" + std::string(paletteName) + "\".");
+	}
 
-	// Fill palette with darkness (the first color in the palette is the closest to night).
-	const uint32_t darkness = pixels[0];
-	Buffer<uint32_t> fullPalette(pixelCount * 2);
+	const Palette &palette = textureManager.getPaletteHandle(*paletteID);
+
+	// Fill sky palette with darkness (the first color in the palette is the closest to night).
+	const uint32_t darkness = palette[0].toARGB();
+	Buffer<uint32_t> fullPalette(static_cast<int>(palette.size()) * 2);
 	fullPalette.fill(darkness);
 
 	// Copy the sky palette over the center of the full palette.
-	std::copy(pixels, pixels + pixelCount, fullPalette.get() + (fullPalette.getCount() / 4));
+	std::transform(palette.begin(), palette.end(), fullPalette.get() + (fullPalette.getCount() / 4),
+		[](const Color &color) { return color.toARGB(); });
 
 	return fullPalette;
 }

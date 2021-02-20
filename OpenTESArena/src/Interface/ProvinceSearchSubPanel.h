@@ -7,8 +7,8 @@
 #include "ListBox.h"
 #include "Panel.h"
 #include "TextBox.h"
+#include "Texture.h"
 #include "../Math/Vector2.h"
-#include "../Rendering/Texture.h"
 
 // The province search sub-panel lets the player enter a location name and travel to it
 // as a convenience.
@@ -20,7 +20,7 @@ class ProvinceSearchSubPanel : public Panel
 private:
 	enum class Mode { TextEntry, List };
 
-	static const int MAX_NAME_LENGTH;
+	static constexpr int MAX_NAME_LENGTH = 20;
 	static const Int2 DEFAULT_TEXT_CURSOR_POSITION;
 
 	Texture parchment;
@@ -56,7 +56,7 @@ public:
 	ProvinceSearchSubPanel(Game &game, ProvinceMapPanel &provinceMapPanel, int provinceID);
 	virtual ~ProvinceSearchSubPanel() = default;
 
-	virtual Panel::CursorData getCurrentCursor() const override;
+	virtual std::optional<Panel::CursorData> getCurrentCursor() const override;
 	virtual void handleEvent(const SDL_Event &e) override;
 	virtual void tick(double dt) override;
 	virtual void render(Renderer &renderer) override;

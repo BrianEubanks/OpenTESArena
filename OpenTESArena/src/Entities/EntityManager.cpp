@@ -1,30 +1,43 @@
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 
+#include "EntityDefinitionLibrary.h"
 #include "EntityManager.h"
 #include "EntityType.h"
-#include "../Assets/MIFFile.h"
+#include "../Assets/MIFUtils.h"
 #include "../Game/Game.h"
 #include "../Math/Constants.h"
 #include "../Math/MathUtils.h"
 #include "../Math/Matrix4.h"
-#include "../World/VoxelDataType.h"
-#include "../World/VoxelUtils.h"
+#include "../World/ChunkUtils.h"
 
 #include "components/debug/Debug.h"
 
 namespace
 {
-	constexpr int DEFAULT_CHUNK_X = 0;
-	constexpr int DEFAULT_CHUNK_Y = 0;
+	constexpr EntityID FIRST_ENTITY_ID = 0;
+	constexpr SNInt DEFAULT_CHUNK_X = 0;
+	constexpr WEInt DEFAULT_CHUNK_Z = 0;
 }
 
 EntityManager::EntityVisibilityData::EntityVisibilityData() :
-	flatPosition(Double3::Zero), keyframe(EntityAnimationData::Keyframe(0, 0, 0))
+	flatPosition(ChunkInt2::Zero, VoxelDouble3::Zero)
 {
 	this->entity = nullptr;
-	this->anglePercent = 0.0;
-	this->stateType = EntityAnimationData::StateType::Idle;
+	this->stateIndex = -1;
+	this->angleIndex = -1;
+	this->keyframeIndex = -1;
+}
+
+void EntityManager::EntityVisibilityData::init(const Entity *entity, const CoordDouble3 &flatPosition,
+	int stateIndex, int angleIndex, int keyframeIndex)
+{
+	this->entity = entity;
+	this->flatPosition = flatPosition;
+	this->stateIndex = stateIndex;
+	this->angleIndex = angleIndex;
+	this->keyframeIndex = keyframeIndex;
 }
 
 template <typename T>
@@ -120,7 +133,7 @@ int EntityManager::EntityGroup<T>::getEntities(const Entity **outEntities, int o
 }
 
 template <typename T>
-std::optional<int> EntityManager::EntityGroup<T>::getEntityIndex(int id) const
+std::optional<int> EntityManager::EntityGroup<T>::getEntityIndex(EntityID id) const
 {
 	const auto iter = this->indices.find(id);
 	if (iter != this->indices.end())
@@ -158,7 +171,7 @@ int EntityManager::EntityGroup<T>::nextFreeIndex()
 }
 
 template <typename T>
-T *EntityManager::EntityGroup<T>::addEntity(int id)
+T *EntityManager::EntityGroup<T>::addEntity(EntityID id)
 {
 	DebugAssert(id != EntityManager::NO_ID);
 	DebugAssert(this->validEntities.size() == this->entities.size());
@@ -182,7 +195,7 @@ T *EntityManager::EntityGroup<T>::addEntity(int id)
 }
 
 template <typename T>
-void EntityManager::EntityGroup<T>::acquireEntity(int id, EntityGroup<T> &oldGroup)
+void EntityManager::EntityGroup<T>::acquireEntity(EntityID id, EntityGroup<T> &oldGroup)
 {
 	DebugAssert(id != EntityManager::NO_ID);
 
@@ -209,7 +222,7 @@ void EntityManager::EntityGroup<T>::acquireEntity(int id, EntityGroup<T> &oldGro
 }
 
 template <typename T>
-void EntityManager::EntityGroup<T>::remove(int id)
+void EntityManager::EntityGroup<T>::remove(EntityID id)
 {
 	DebugAssert(id != EntityManager::NO_ID);
 	DebugAssert(this->validEntities.size() == this->entities.size());
@@ -247,28 +260,26 @@ void EntityManager::EntityGroup<T>::clear()
 	this->freeIndices.clear();
 }
 
-const int EntityManager::NO_ID = -1;
-
-void EntityManager::init(EWInt chunkCountX, SNInt chunkCountY)
+void EntityManager::init(SNInt chunkCountX, WEInt chunkCountZ)
 {
-	this->staticGroups.init(chunkCountX, chunkCountY);
-	this->dynamicGroups.init(chunkCountX, chunkCountY);
-	this->nextID = 0;
+	this->staticGroups.init(chunkCountX, chunkCountZ);
+	this->dynamicGroups.init(chunkCountX, chunkCountZ);
+	this->nextID = FIRST_ENTITY_ID;
 }
 
-int EntityManager::nextFreeID()
+EntityID EntityManager::nextFreeID()
 {
 	// Check if any pre-owned entity IDs are available.
 	if (this->freeIDs.size() > 0)
 	{
-		const int id = this->freeIDs.back();
+		const EntityID id = this->freeIDs.back();
 		this->freeIDs.pop_back();
 		return id;
 	}
 	else
 	{
 		// Get the next available ID.
-		const int id = this->nextID;
+		const EntityID id = this->nextID;
 		this->nextID++;
 		return id;
 	}
@@ -276,93 +287,197 @@ int EntityManager::nextFreeID()
 
 bool EntityManager::isValidChunk(const ChunkInt2 &chunk) const
 {
-	const EWInt chunkCountX = this->staticGroups.getWidth();
-	const SNInt chunkCountY = this->staticGroups.getHeight();
-	return (chunk.x >= 0) && (chunk.x < chunkCountX) && (chunk.y >= 0) && (chunk.y < chunkCountY);
+	const SNInt chunkCountX = this->staticGroups.getWidth();
+	const WEInt chunkCountZ = this->staticGroups.getHeight();
+	return (chunk.x >= 0) && (chunk.x < chunkCountX) && (chunk.y >= 0) && (chunk.y < chunkCountZ);
 }
 
-StaticEntity *EntityManager::makeStaticEntity()
+EntityRef EntityManager::makeEntity(EntityType type)
 {
-	const int id = this->nextFreeID();
-	auto &staticGroup = this->staticGroups.get(DEFAULT_CHUNK_X, DEFAULT_CHUNK_Y);
-	StaticEntity *entity = staticGroup.addEntity(id);
-	DebugAssert(entity->getID() == id);
-	return entity;
-}
-
-DynamicEntity *EntityManager::makeDynamicEntity()
-{
-	const int id = this->nextFreeID();
-	auto &dynamicGroup = this->dynamicGroups.get(DEFAULT_CHUNK_X, DEFAULT_CHUNK_Y);
-	DynamicEntity *entity = dynamicGroup.addEntity(id);
-	DebugAssert(entity->getID() == id);
-	return entity;
-}
-
-Entity *EntityManager::get(int id)
-{
-	DebugAssert(this->staticGroups.getWidth() == this->dynamicGroups.getWidth());
-	DebugAssert(this->staticGroups.getHeight() == this->dynamicGroups.getHeight());
-
-	// Find which entity group the given entity ID is in. This is a slow look-up because there is
-	// no hint where the entity is at.
-	for (SNInt y = 0; y < this->staticGroups.getHeight(); y++)
+	const EntityID id = this->nextFreeID();
+	EntityRef entityRef = [this, type, id]()
 	{
-		for (EWInt x = 0; x < this->staticGroups.getWidth(); x++)
+		if (type == EntityType::Static)
 		{
-			auto &staticGroup = this->staticGroups.get(x, y);
-			std::optional<int> entityIndex = staticGroup.getEntityIndex(id);
-			if (entityIndex.has_value())
-			{
-				// Static entity.
-				return staticGroup.getEntityAtIndex(*entityIndex);
-			}
+			auto &group = this->staticGroups.get(DEFAULT_CHUNK_X, DEFAULT_CHUNK_Z);
+			StaticEntity *entity = group.addEntity(id);
+			return EntityRef(this, id, type);
+		}
+		else if (type == EntityType::Dynamic)
+		{
+			auto &group = this->dynamicGroups.get(DEFAULT_CHUNK_X, DEFAULT_CHUNK_Z);
+			DynamicEntity *entity = group.addEntity(id);
+			return EntityRef(this, id, type);
+		}
+		else
+		{
+			DebugNotImplementedMsg(std::to_string(static_cast<int>(type)));
+			return EntityRef(nullptr, EntityManager::NO_ID, EntityType::Static);
+		}
+	}();
 
-			auto &dynamicGroup = this->dynamicGroups.get(x, y);
-			entityIndex = dynamicGroup.getEntityIndex(id);
-			if (entityIndex.has_value())
+	DebugAssert(entityRef.getID() == id);
+	return entityRef;
+}
+
+template <typename T>
+Entity *EntityManager::getInternal(EntityID id, EntityGroup<T> &group)
+{
+	if (id == EntityManager::NO_ID)
+	{
+		return nullptr;
+	}
+
+	const std::optional<int> index = group.getEntityIndex(id);
+	return index.has_value() ? group.getEntityAtIndex(*index) : nullptr;
+}
+
+template <typename T>
+const Entity *EntityManager::getInternal(EntityID id, const EntityGroup<T> &group) const
+{
+	if (id == EntityManager::NO_ID)
+	{
+		return nullptr;
+	}
+
+	const std::optional<int> index = group.getEntityIndex(id);
+	return index.has_value() ? group.getEntityAtIndex(*index) : nullptr;
+}
+
+Entity *EntityManager::getEntityHandle(EntityID id, EntityType type)
+{
+	// Use the given entity type to determine which entity group to look in.
+	auto tryGetEntityHandle = [this, id](auto &entityGroups) -> Entity*
+	{
+		for (WEInt z = 0; z < entityGroups.getHeight(); z++)
+		{
+			for (SNInt x = 0; x < entityGroups.getWidth(); x++)
 			{
-				// Dynamic entity.
-				return dynamicGroup.getEntityAtIndex(*entityIndex);
+				auto &group = entityGroups.get(x, z);
+				Entity *entity = this->getInternal(id, group);
+				if (entity != nullptr)
+				{
+					return entity;
+				}
 			}
 		}
+
+		return nullptr;
+	};
+
+	switch (type)
+	{
+	case EntityType::Static:
+		return tryGetEntityHandle(this->staticGroups);
+	case EntityType::Dynamic:
+		return tryGetEntityHandle(this->dynamicGroups);
+	default:
+		DebugNotImplementedMsg(std::to_string(static_cast<int>(type)));
+		return nullptr;
+	}
+}
+
+const Entity *EntityManager::getEntityHandle(EntityID id, EntityType type) const
+{
+	// Use the given entity type to determine which entity group to look in.
+	auto tryGetEntityHandle = [this, id](const auto &entityGroups) -> const Entity*
+	{
+		for (WEInt z = 0; z < entityGroups.getHeight(); z++)
+		{
+			for (SNInt x = 0; x < entityGroups.getWidth(); x++)
+			{
+				const auto &group = entityGroups.get(x, z);
+				const Entity *entity = this->getInternal(id, group);
+				if (entity != nullptr)
+				{
+					return entity;
+				}
+			}
+		}
+
+		return nullptr;
+	};
+
+	switch (type)
+	{
+	case EntityType::Static:
+		return tryGetEntityHandle(this->staticGroups);
+	case EntityType::Dynamic:
+		return tryGetEntityHandle(this->dynamicGroups);
+	default:
+		DebugNotImplementedMsg(std::to_string(static_cast<int>(type)));
+		return nullptr;
+	}
+}
+
+Entity *EntityManager::getEntityHandle(EntityID id)
+{
+	// Find which entity group the given entity ID is in. This is a slow look-up because there is
+	// no hint where the entity is at.
+	Entity *entity = this->getEntityHandle(id, EntityType::Static);
+	if (entity != nullptr)
+	{
+		// Static entity.
+		return entity;
+	}
+
+	entity = this->getEntityHandle(id, EntityType::Dynamic);
+	if (entity != nullptr)
+	{
+		// Dynamic entity.
+		return entity;
 	}
 
 	// Not in any entity group.
 	return nullptr;
 }
 
-const Entity *EntityManager::get(int id) const
+const Entity *EntityManager::getEntityHandle(EntityID id) const
 {
-	DebugAssert(this->staticGroups.getWidth() == this->dynamicGroups.getWidth());
-	DebugAssert(this->staticGroups.getHeight() == this->dynamicGroups.getHeight());
-
 	// Find which entity group the given entity ID is in. This is a slow look-up because there is
 	// no hint where the entity is at.
-	for (SNInt y = 0; y < this->staticGroups.getHeight(); y++)
+	const Entity *entity = this->getEntityHandle(id, EntityType::Static);
+	if (entity != nullptr)
 	{
-		for (EWInt x = 0; x < this->staticGroups.getWidth(); x++)
-		{
-			const auto &staticGroup = this->staticGroups.get(x, y);
-			std::optional<int> entityIndex = staticGroup.getEntityIndex(id);
-			if (entityIndex.has_value())
-			{
-				// Static entity.
-				return staticGroup.getEntityAtIndex(*entityIndex);
-			}
+		// Static entity.
+		return entity;
+	}
 
-			const auto &dynamicGroup = this->dynamicGroups.get(x, y);
-			entityIndex = dynamicGroup.getEntityIndex(id);
-			if (entityIndex.has_value())
-			{
-				// Dynamic entity.
-				return dynamicGroup.getEntityAtIndex(*entityIndex);
-			}
-		}
+	entity = this->getEntityHandle(id, EntityType::Dynamic);
+	if (entity != nullptr)
+	{
+		// Dynamic entity.
+		return entity;
 	}
 
 	// Not in any entity group.
 	return nullptr;
+}
+
+EntityRef EntityManager::getEntityRef(EntityID id, EntityType type)
+{
+	return EntityRef(this, id, type);
+}
+
+ConstEntityRef EntityManager::getEntityRef(EntityID id, EntityType type) const
+{
+	return ConstEntityRef(this, id, type);
+}
+
+EntityRef EntityManager::getEntityRef(EntityID id)
+{
+	// Get the entity's type if possible.
+	Entity *entity = this->getEntityHandle(id);
+	EntityType entityType = (entity != nullptr) ? entity->getEntityType() : EntityType::Static;
+	return this->getEntityRef(id, entityType);
+}
+
+ConstEntityRef EntityManager::getEntityRef(EntityID id) const
+{
+	// Get the entity's type if possible.
+	const Entity *entity = this->getEntityHandle(id);
+	EntityType entityType = (entity != nullptr) ? entity->getEntityType() : EntityType::Static;
+	return this->getEntityRef(id, entityType);
 }
 
 int EntityManager::getCount(EntityType entityType) const
@@ -370,11 +485,11 @@ int EntityManager::getCount(EntityType entityType) const
 	auto getCountFromGroups = [](const auto &entityGroups)
 	{
 		int count = 0;
-		for (SNInt y = 0; y < entityGroups.getHeight(); y++)
+		for (WEInt z = 0; z < entityGroups.getHeight(); z++)
 		{
-			for (EWInt x = 0; x < entityGroups.getWidth(); x++)
+			for (SNInt x = 0; x < entityGroups.getWidth(); x++)
 			{
-				const auto &entityGroup = entityGroups.get(x, y);
+				const auto &entityGroup = entityGroups.get(x, z);
 				count += entityGroup.getCount();
 			}
 		}
@@ -421,16 +536,16 @@ int EntityManager::getEntities(EntityType entityType, Entity **outEntities, int 
 	auto getEntitiesFromGroups = [](auto &entityGroups, Entity **outEntities, int outSize)
 	{
 		int writeIndex = 0;
-		for (SNInt y = 0; y < entityGroups.getHeight(); y++)
+		for (WEInt z = 0; z < entityGroups.getHeight(); z++)
 		{
-			for (EWInt x = 0; x < entityGroups.getWidth(); x++)
+			for (SNInt x = 0; x < entityGroups.getWidth(); x++)
 			{
 				if (writeIndex == outSize)
 				{
 					break;
 				}
 
-				auto &entityGroup = entityGroups.get(x, y);
+				auto &entityGroup = entityGroups.get(x, z);
 				writeIndex += entityGroup.getEntities(outEntities + writeIndex, outSize - writeIndex);
 			}
 		}
@@ -458,16 +573,16 @@ int EntityManager::getEntities(EntityType entityType, const Entity **outEntities
 	auto getEntitiesFromGroups = [](const auto &entityGroups, const Entity **outEntities, int outSize)
 	{
 		int writeIndex = 0;
-		for (SNInt y = 0; y < entityGroups.getHeight(); y++)
+		for (WEInt z = 0; z < entityGroups.getHeight(); z++)
 		{
-			for (EWInt x = 0; x < entityGroups.getWidth(); x++)
+			for (SNInt x = 0; x < entityGroups.getWidth(); x++)
 			{
 				if (writeIndex == outSize)
 				{
 					break;
 				}
 
-				const auto &entityGroup = entityGroups.get(x, y);
+				const auto &entityGroup = entityGroups.get(x, z);
 				writeIndex += entityGroup.getEntities(outEntities + writeIndex, outSize - writeIndex);
 			}
 		}
@@ -538,9 +653,9 @@ int EntityManager::getTotalEntities(const Entity **outEntities, int outSize) con
 
 	// Fill the output buffer with as many entities as will fit.
 	int writeIndex = 0;
-	for (SNInt y = 0; y < this->staticGroups.getHeight(); y++)
+	for (WEInt z = 0; z < this->staticGroups.getHeight(); z++)
 	{
-		for (EWInt x = 0; x < this->staticGroups.getWidth(); x++)
+		for (SNInt x = 0; x < this->staticGroups.getWidth(); x++)
 		{
 			if (writeIndex == outSize)
 			{
@@ -548,44 +663,59 @@ int EntityManager::getTotalEntities(const Entity **outEntities, int outSize) con
 			}
 
 			writeIndex += this->getTotalEntitiesInChunk(
-				ChunkInt2(x, y), outEntities + writeIndex, outSize - writeIndex);
+				ChunkInt2(x, z), outEntities + writeIndex, outSize - writeIndex);
 		}
 	}
 
 	return writeIndex;
 }
 
-const EntityDefinition *EntityManager::getEntityDef(int flatIndex) const
+bool EntityManager::hasEntityDef(EntityDefID defID) const
 {
-	const auto iter = std::find_if(this->entityDefs.begin(), this->entityDefs.end(),
-		[flatIndex](const EntityDefinition &def)
+	return (defID >= 0) && (defID < static_cast<int>(this->entityDefs.size()));
+}
+
+const EntityDefinition &EntityManager::getEntityDef(EntityDefID defID,
+	const EntityDefinitionLibrary &entityDefLibrary) const
+{
+	const auto iter = this->entityDefs.find(defID);
+	if (iter != this->entityDefs.end())
 	{
-		return def.getInfData().flatIndex == flatIndex;
-	});
-
-	return (iter != this->entityDefs.end()) ? &(*iter) : nullptr;
+		return iter->second;
+	}
+	else
+	{
+		return entityDefLibrary.getDefinition(defID);
+	}
 }
 
-EntityDefinition *EntityManager::addEntityDef(EntityDefinition &&def)
+EntityDefID EntityManager::addEntityDef(EntityDefinition &&def,
+	const EntityDefinitionLibrary &entityDefLibrary)
 {
-	this->entityDefs.push_back(std::move(def));
-	return &this->entityDefs.back();
+	const int libraryDefCount = entityDefLibrary.getDefinitionCount();
+	const EntityDefID defID = static_cast<EntityDefID>(libraryDefCount + this->entityDefs.size());
+	this->entityDefs.emplace(std::make_pair(defID, std::move(def)));
+	return defID;
 }
 
-void EntityManager::getEntityVisibilityData(const Entity &entity, const Double2 &eye2D,
-	double ceilingHeight, const VoxelGrid &voxelGrid, EntityVisibilityData &outVisData) const
+void EntityManager::getEntityVisibilityData(const Entity &entity, const CoordDouble2 &eye2D,
+	double ceilingHeight, const VoxelGrid &voxelGrid, const EntityDefinitionLibrary &entityDefLibrary,
+	EntityVisibilityData &outVisData) const
 {
 	outVisData.entity = &entity;
-	const EntityDefinition &entityDef = *this->getEntityDef(entity.getDataIndex());
-	const EntityAnimationData &entityAnimData = entityDef.getAnimationData();
+	const EntityDefinition &entityDef = this->getEntityDef(entity.getDefinitionID(), entityDefLibrary);
+	const EntityAnimationDefinition &animDef = entityDef.getAnimDef();
+	const EntityAnimationInstance &animInst = entity.getAnimInstance();
 
-	// Get active state
-	const EntityAnimationData::Instance &animInstance = entity.getAnimation();
-	const std::vector<EntityAnimationData::State> &stateList = animInstance.getStateList(entityAnimData);
-	const int stateCount = static_cast<int>(stateList.size()); // 1 if it's the same for all angles.
+	// Get active animation state.
+	const int animStateIndex = animInst.getStateIndex();
+	const EntityAnimationDefinition::State &animDefState = animDef.getState(animStateIndex);
+	const EntityAnimationInstance::State &animInstState = animInst.getState(animStateIndex);
+	outVisData.stateIndex = animStateIndex;
 
-	// Calculate state index based on entity direction relative to camera.
-	const double animAngle = [&entity, &eye2D, stateCount]()
+	// Get animation angle based on entity direction relative to some camera/eye.
+	const int angleCount = animInstState.getKeyframeListCount();
+	const Radians animAngle = [&entity, &eye2D, angleCount]()
 	{
 		if (entity.getEntityType() == EntityType::Static)
 		{
@@ -596,18 +726,17 @@ void EntityManager::getEntityVisibilityData(const Entity &entity, const Double2 
 		{
 			// Dynamic entities are angle-dependent.
 			const DynamicEntity &dynamicEntity = static_cast<const DynamicEntity&>(entity);
-			const Double2 &entityDir = dynamicEntity.getDirection();
-			const Double2 diffDir = (eye2D - entity.getPosition()).normalized();
+			const NewDouble2 &entityDir = dynamicEntity.getDirection();
+			const VoxelDouble2 diffDir = (eye2D - dynamicEntity.getPosition()).normalized();
 
-			const double entityAngle = MathUtils::fullAtan2(entityDir.y, entityDir.x);
-			const double diffAngle = MathUtils::fullAtan2(diffDir.y, diffDir.x);
+			const Radians entityAngle = MathUtils::fullAtan2(entityDir);
+			const Radians diffAngle = MathUtils::fullAtan2(diffDir);
 
-			// Use the difference of the two vectors as the angle vector.
-			const Double2 resultDir = entityDir - diffDir;
-			const double resultAngle = Constants::Pi + MathUtils::fullAtan2(resultDir.y, resultDir.x);
+			// Use the difference of the two angles to get the relative angle.
+			const Radians resultAngle = Constants::TwoPi + (entityAngle - diffAngle);
 
 			// Angle bias so the final direction is centered within its angle range.
-			const double angleBias = (Constants::TwoPi / static_cast<double>(stateCount)) * 0.50;
+			const Radians angleBias = (Constants::TwoPi / static_cast<double>(angleCount)) * 0.50;
 
 			return std::fmod(resultAngle + angleBias, Constants::TwoPi);
 		}
@@ -618,47 +747,52 @@ void EntityManager::getEntityVisibilityData(const Entity &entity, const Double2 
 		}
 	}();
 
-	outVisData.anglePercent = std::clamp(animAngle / Constants::TwoPi, 0.0, Constants::JustBelowOne);
-
-	const int stateIndex = [&outVisData, stateCount]()
+	// Index into animation keyframe lists for the state.
+	outVisData.angleIndex = [angleCount, animAngle]()
 	{
-		const int index = static_cast<int>(static_cast<double>(stateCount) * outVisData.anglePercent);
-		return std::clamp(index, 0, stateCount - 1);
+		const double angleCountReal = static_cast<double>(angleCount);
+		const double anglePercent = animAngle / Constants::TwoPi;
+		const int angleIndex = static_cast<int>(angleCountReal * anglePercent);
+		return std::clamp(angleIndex, 0, angleCount - 1);
 	}();
 
-	DebugAssertIndex(stateList, stateIndex);
-	const EntityAnimationData::State &animState = stateList[stateIndex];
-	outVisData.stateType = animState.getType();
+	// Keyframe list for the current state and angle.
+	const EntityAnimationDefinition::KeyframeList &animDefKeyframeList =
+		animDefState.getKeyframeList(outVisData.angleIndex);
 
-	// Get the entity's current animation frame (dimensions, texture, etc.).
-	outVisData.keyframe = [&entity, &entityAnimData, &animInstance, stateIndex, &animState]()
-		-> const EntityAnimationData::Keyframe&
+	// Progress through current animation.
+	outVisData.keyframeIndex = [&animInst, &animDefState, &animDefKeyframeList]()
 	{
-		const int keyframeIndex = animInstance.getKeyframeIndex(stateIndex, entityAnimData);
-		const BufferView<const EntityAnimationData::Keyframe> keyframes = animState.getKeyframes();
-		return keyframes.get(keyframeIndex);
+		const int keyframeCount = animDefKeyframeList.getKeyframeCount();
+		const double keyframeCountReal = static_cast<double>(keyframeCount);
+		const double animCurSeconds = animInst.getCurrentSeconds();
+		const double animTotalSeconds = animDefState.getTotalSeconds();
+		const double animPercent = animCurSeconds / animTotalSeconds;
+		const int keyframeIndex = static_cast<int>(keyframeCountReal * animPercent);
+		return std::clamp(keyframeIndex, 0, keyframeCount - 1);
 	}();
 
-	const double flatWidth = outVisData.keyframe.getWidth();
-	const double flatHeight = outVisData.keyframe.getHeight();
+	// Current animation frame based on everything above.
+	const EntityAnimationDefinition::Keyframe &animDefKeyframe =
+		animDefKeyframeList.getKeyframe(outVisData.keyframeIndex);
+
+	const double flatWidth = animDefKeyframe.getWidth();
+	const double flatHeight = animDefKeyframe.getHeight();
 	const double flatHalfWidth = flatWidth * 0.50;
 
-	const Double2 &entityPos = entity.getPosition();
-	const double entityPosX = entityPos.x;
-	const double entityPosZ = entityPos.y;
-
-	const double flatYOffset = static_cast<double>(-entityDef.getInfData().yOffset) / MIFFile::ARENA_UNITS;
+	const int baseYOffset = EntityUtils::getYOffset(entityDef);
+	const double flatYOffset =  static_cast<double>(-baseYOffset) / MIFUtils::ARENA_UNITS;
 
 	// If the entity is in a raised platform voxel, they are set on top of it.
-	const double raisedPlatformYOffset = [ceilingHeight, &voxelGrid, &entityPos]()
+	const CoordDouble2 &entityPosition = entity.getPosition();
+	const double raisedPlatformYOffset = [ceilingHeight, &voxelGrid, &entityPosition]()
 	{
-		const NewInt2 entityVoxelPos(
-			static_cast<int>(entityPos.x),
-			static_cast<int>(entityPos.y));
-		const uint16_t voxelID = voxelGrid.getVoxel(entityVoxelPos.x, 1, entityVoxelPos.y);
+		const NewDouble2 absoluteEntityPositionXZ = VoxelUtils::coordToNewPoint(entityPosition);
+		const NewInt2 absoluteEntityVoxelPosXZ = VoxelUtils::pointToVoxel(absoluteEntityPositionXZ);
+		const uint16_t voxelID = voxelGrid.getVoxel(absoluteEntityVoxelPosXZ.x, 1, absoluteEntityVoxelPosXZ.y);
 		const VoxelDefinition &voxelDef = voxelGrid.getVoxelDef(voxelID);
 
-		if (voxelDef.dataType == VoxelDataType::Raised)
+		if (voxelDef.type == ArenaTypes::VoxelType::Raised)
 		{
 			const VoxelDefinition::RaisedData &raised = voxelDef.raised;
 			return (raised.yOffset + raised.ySize) * ceilingHeight;
@@ -671,26 +805,44 @@ void EntityManager::getEntityVisibilityData(const Entity &entity, const Double2 
 	}();
 
 	// Bottom center of flat.
-	outVisData.flatPosition = Double3(
-		entityPosX,
+	const VoxelDouble3 newCoordPoint(
+		entityPosition.point.x,
 		ceilingHeight + flatYOffset + raisedPlatformYOffset,
-		entityPosZ);
+		entityPosition.point.y);
+	outVisData.flatPosition = CoordDouble3(entityPosition.chunk, newCoordPoint);
+}
+
+const EntityAnimationDefinition::Keyframe &EntityManager::getEntityAnimKeyframe(const Entity &entity,
+	const EntityVisibilityData &visData, const EntityDefinitionLibrary &entityDefLibrary) const
+{
+	const EntityDefinition &entityDef = this->getEntityDef(entity.getDefinitionID(), entityDefLibrary);
+	const EntityAnimationDefinition &animDef = entityDef.getAnimDef();
+	const EntityAnimationDefinition::State &animState = animDef.getState(visData.stateIndex);
+	const EntityAnimationDefinition::KeyframeList &animKeyframeList =
+		animState.getKeyframeList(visData.angleIndex);
+	const EntityAnimationDefinition::Keyframe &animKeyframe =
+		animKeyframeList.getKeyframe(visData.keyframeIndex);
+	return animKeyframe;
 }
 
 void EntityManager::getEntityBoundingBox(const Entity &entity, const EntityVisibilityData &visData,
-	Double3 *outMin, Double3 *outMax) const
+	const EntityDefinitionLibrary &entityDefLibrary, CoordDouble3 *outMin, CoordDouble3 *outMax) const
 {
-	// Start with a bounding cylinder.
-	const double radius = visData.keyframe.getWidth() / 2.0;
-	const double height = visData.keyframe.getHeight();
+	// Get animation frame from visibility data.
+	const EntityAnimationDefinition::Keyframe &keyframe =
+		this->getEntityAnimKeyframe(entity, visData, entityDefLibrary);
 
-	// Convert the bounding cylinder to an axis-aligned bounding box.
-	outMin->x = visData.flatPosition.x - radius;
-	outMin->y = visData.flatPosition.y;
-	outMin->z = visData.flatPosition.z - radius;
-	outMax->x = visData.flatPosition.x + radius;
-	outMax->y = visData.flatPosition.y + height;
-	outMax->z = visData.flatPosition.z + radius;
+	// Start with bounding cylinder.
+	const double radius = keyframe.getWidth() * 0.50;
+	const double height = keyframe.getHeight();
+
+	// Convert bounding cylinder to axis-aligned bounding box. Need to calculate the resulting chunk coordinates
+	// since the bounding box might cross chunk boundaries.
+	const CoordDouble3 &flatPos = visData.flatPosition;
+	const VoxelDouble3 minPoint(flatPos.point.x - radius, flatPos.point.y, flatPos.point.z - radius);
+	const VoxelDouble3 maxPoint(flatPos.point.x + radius, flatPos.point.y + height, flatPos.point.z + radius);
+	*outMin = ChunkUtils::recalculateCoord(flatPos.chunk, minPoint);
+	*outMax = ChunkUtils::recalculateCoord(flatPos.chunk, maxPoint);
 }
 
 void EntityManager::updateEntityChunk(Entity *entity, const VoxelGrid &voxelGrid)
@@ -702,23 +854,23 @@ void EntityManager::updateEntityChunk(Entity *entity, const VoxelGrid &voxelGrid
 	}
 
 	// Find which chunk they were in.
-	EWInt oldChunkX = -1;
-	SNInt oldChunkY = -1;
+	SNInt oldChunkX = -1;
+	WEInt oldChunkZ = -1;
 
-	auto tryGetEntityGroupInfo = [entity, &oldChunkX, &oldChunkY](auto &entityGroups, auto **groupPtr)
+	auto tryGetEntityGroupInfo = [entity, &oldChunkX, &oldChunkZ](auto &entityGroups, auto **groupPtr)
 	{
 		// Find which entity group the given entity ID is in. This is a slow look-up because there is
 		// no hint where the entity is at.
-		for (SNInt y = 0; y < entityGroups.getHeight(); y++)
+		for (WEInt z = 0; z < entityGroups.getHeight(); z++)
 		{
-			for (EWInt x = 0; x < entityGroups.getWidth(); x++)
+			for (SNInt x = 0; x < entityGroups.getWidth(); x++)
 			{
-				auto &entityGroup = entityGroups.get(x, y);
+				auto &entityGroup = entityGroups.get(x, z);
 				const std::optional<int> entityIndex = entityGroup.getEntityIndex(entity->getID());
 				if (entityIndex.has_value())
 				{
 					oldChunkX = x;
-					oldChunkY = y;
+					oldChunkZ = z;
 					*groupPtr = &entityGroup;
 					return true;
 				}
@@ -728,29 +880,18 @@ void EntityManager::updateEntityChunk(Entity *entity, const VoxelGrid &voxelGrid
 		return false;
 	};
 
-	auto trySwapEntityGroup = [&voxelGrid, &oldChunkX, &oldChunkY](Entity *entity,
-		auto &oldGroup, auto &entityGroups)
+	auto trySwapEntityGroup = [&oldChunkX, &oldChunkZ](Entity *entity, auto &oldGroup, auto &entityGroups)
 	{
 		auto swapEntityGroup = [](Entity *entity, auto &oldGroup, auto &newGroup)
 		{
 			newGroup.acquireEntity(entity->getID(), oldGroup);
 		};
 
-		const Double2 &entityPosXZ = entity->getPosition();
-		const NewInt2 entityVoxelXZ(
-			static_cast<int>(entityPosXZ.x),
-			static_cast<int>(entityPosXZ.y));
-		const OriginalInt2 originalVoxelXZ = VoxelUtils::newVoxelToOriginalVoxel(
-			entityVoxelXZ, voxelGrid.getWidth(), voxelGrid.getDepth());
-
-		constexpr int CHUNK_DIM = 64;
-		const EWInt newChunkX = originalVoxelXZ.x / CHUNK_DIM;
-		const SNInt newChunkY = originalVoxelXZ.y / CHUNK_DIM;
-
-		const bool groupHasChanged = (newChunkX != oldChunkX) || (newChunkY != oldChunkY);
+		const ChunkInt2 &newChunk = entity->getPosition().chunk;
+		const bool groupHasChanged = (newChunk.x != oldChunkX) || (newChunk.y != oldChunkZ);
 		if (groupHasChanged)
 		{
-			auto &newGroup = entityGroups.get(newChunkX, newChunkY);
+			auto &newGroup = entityGroups.get(newChunk.x, newChunk.y);
 			swapEntityGroup(entity, oldGroup, newGroup);
 		}
 	};
@@ -778,18 +919,18 @@ void EntityManager::updateEntityChunk(Entity *entity, const VoxelGrid &voxelGrid
 	}
 }
 
-void EntityManager::remove(int id)
+void EntityManager::remove(EntityID id)
 {
 	DebugAssert(this->staticGroups.getWidth() == this->dynamicGroups.getWidth());
 	DebugAssert(this->staticGroups.getHeight() == this->dynamicGroups.getHeight());
 
 	// Find which entity group the given entity ID is in. This is a slow look-up because there is
 	// no hint where the entity is at.
-	for (SNInt y = 0; y < this->staticGroups.getHeight(); y++)
+	for (WEInt z = 0; z < this->staticGroups.getHeight(); z++)
 	{
-		for (EWInt x = 0; x < this->staticGroups.getWidth(); x++)
+		for (SNInt x = 0; x < this->staticGroups.getWidth(); x++)
 		{
-			auto &staticGroup = this->staticGroups.get(x, y);
+			auto &staticGroup = this->staticGroups.get(x, z);
 			std::optional<int> entityIndex = staticGroup.getEntityIndex(id);
 			if (entityIndex.has_value())
 			{
@@ -801,7 +942,7 @@ void EntityManager::remove(int id)
 				return;
 			}
 
-			auto &dynamicGroup = this->dynamicGroups.get(x, y);
+			auto &dynamicGroup = this->dynamicGroups.get(x, z);
 			entityIndex = dynamicGroup.getEntityIndex(id);
 			if (entityIndex.has_value())
 			{
@@ -821,21 +962,28 @@ void EntityManager::remove(int id)
 
 void EntityManager::clear()
 {
-	for (SNInt y = 0; y < this->staticGroups.getHeight(); y++)
+	for (WEInt z = 0; z < this->staticGroups.getHeight(); z++)
 	{
-		for (EWInt x = 0; x < this->staticGroups.getWidth(); x++)
+		for (SNInt x = 0; x < this->staticGroups.getWidth(); x++)
 		{
-			auto &staticGroup = this->staticGroups.get(x, y);
-			auto &dynamicGroup = this->dynamicGroups.get(x, y);
+			auto &staticGroup = this->staticGroups.get(x, z);
+			auto &dynamicGroup = this->dynamicGroups.get(x, z);
 			staticGroup.clear();
 			dynamicGroup.clear();
 		}
 	}
 
 	this->entityDefs.clear();
-
 	this->freeIDs.clear();
-	this->nextID = 0;
+	this->nextID = FIRST_ENTITY_ID;
+}
+
+void EntityManager::clearChunk(const ChunkInt2 &coord)
+{
+	auto &staticGroup = this->staticGroups.get(coord.x, coord.y);
+	auto &dynamicGroup = this->dynamicGroups.get(coord.x, coord.y);
+	staticGroup.clear();
+	dynamicGroup.clear();
 }
 
 void EntityManager::tick(Game &game, double dt)
@@ -844,33 +992,31 @@ void EntityManager::tick(Game &game, double dt)
 	const ChunkInt2 playerChunk = [&game]()
 	{
 		auto &gameData = game.getGameData();
-		const auto &worldData = gameData.getWorldData();
-		const auto &levelData = worldData.getActiveLevel();
-		const auto &voxelGrid = levelData.getVoxelGrid();
-		const Double3 &playerPosition = gameData.getPlayer().getPosition();
-		const NewInt2 playerVoxelXZ(
-			static_cast<int>(std::floor(playerPosition.x)),
-			static_cast<int>(std::floor(playerPosition.z)));
-		return VoxelUtils::newVoxelToChunk(
-			playerVoxelXZ, voxelGrid.getWidth(), voxelGrid.getDepth());
+		const CoordDouble3 &playerCoord = gameData.getPlayer().getPosition();
+		return playerCoord.chunk;
 	}();
 
-	const int chunkDistance = 1; // @todo: get from Options
+	const int chunkDistance = [&game]()
+	{
+		const auto &options = game.getOptions();
+		return options.getMisc_ChunkDistance();
+	}();
+
 	ChunkInt2 minChunk, maxChunk;
-	VoxelUtils::getSurroundingChunks(playerChunk, chunkDistance, &minChunk, &maxChunk);
+	ChunkUtils::getSurroundingChunks(playerChunk, chunkDistance, &minChunk, &maxChunk);
 
 	auto tickNearbyEntityGroups = [&game, dt, &minChunk, &maxChunk](auto &entityGroups)
 	{
-		for (SNInt y = minChunk.y; y <= maxChunk.y; y++)
+		for (WEInt z = minChunk.y; z <= maxChunk.y; z++)
 		{
-			for (EWInt x = minChunk.x; x <= maxChunk.x; x++)
+			for (SNInt x = minChunk.x; x <= maxChunk.x; x++)
 			{
 				const bool coordIsValid = (x >= 0) && (x < entityGroups.getWidth()) &&
-					(y >= 0) && (y < entityGroups.getHeight());
+					(z >= 0) && (z < entityGroups.getHeight());
 
 				if (coordIsValid)
 				{
-					auto &entityGroup = entityGroups.get(x, y);
+					auto &entityGroup = entityGroups.get(x, z);
 					const int entityCount = entityGroup.getCount();
 
 					for (int i = 0; i < entityCount; i++)

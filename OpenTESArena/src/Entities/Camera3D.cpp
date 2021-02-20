@@ -6,7 +6,7 @@
 
 #include "components/debug/Debug.h"
 
-Camera3D::Camera3D(const Double3 &position, const Double3 &direction)
+Camera3D::Camera3D(const CoordDouble3 &position, const Double3 &direction)
 	: forward(direction), right(forward.cross(Double3::UnitY).normalized()),
 	up(right.cross(forward).normalized()), position(position) { }
 
@@ -18,24 +18,6 @@ const Double3 &Camera3D::getDirection() const
 const Double3 &Camera3D::getRight() const
 {
 	return this->right;
-}
-
-Matrix4d Camera3D::getViewMatrix() const
-{
-	// Column vectors.
-	const Double4 rotationX(this->right.x, this->up.x, -this->forward.x, 0.0);
-	const Double4 rotationY(this->right.y, this->up.y, -this->forward.y, 0.0);
-	const Double4 rotationZ(this->right.z, this->up.z, -this->forward.z, 0.0);
-
-	const Matrix4d rotation(rotationX, rotationY, rotationZ, Double4::UnitW);
-
-	// Column vector.
-	const Double4 translationW(-this->position, 1.0);
-
-	const Matrix4d translation(Double4::UnitX, Double4::UnitY, 
-		Double4::UnitZ, translationW);
-
-	return rotation * translation;
 }
 
 void Camera3D::pitch(double radians)
@@ -90,9 +72,9 @@ void Camera3D::rotate(double dx, double dy, double pitchLimit)
 	this->yaw(-lookRightRads/* / zoom*/);
 }
 
-void Camera3D::lookAt(const Double3 &point)
+void Camera3D::lookAt(const CoordDouble3 &coord)
 {
-	const Double3 newForward = (point - this->position).normalized();
+	const Double3 newForward = (coord - this->position).normalized();
 	const Double3 newRight = newForward.cross(Double3::UnitY).normalized();
 	const Double3 newUp = newRight.cross(newForward).normalized();
 

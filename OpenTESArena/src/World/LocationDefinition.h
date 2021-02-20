@@ -1,13 +1,15 @@
 #ifndef LOCATION_DEFINITION_H
 #define LOCATION_DEFINITION_H
 
+#include <optional>
 #include <string>
 
 #include "VoxelUtils.h"
+#include "../Assets/ArenaTypes.h"
 #include "../Assets/CityDataFile.h"
 
+class BinaryAssetLibrary;
 class ExeData;
-class MiscAssets;
 
 enum class ClimateType;
 
@@ -23,8 +25,6 @@ public:
 
 	struct CityDefinition
 	{
-		enum class Type { CityState, Town, Village };
-
 		// Used with a couple special-cased temple names in the original game.
 		struct MainQuestTempleOverride
 		{
@@ -35,9 +35,9 @@ public:
 			void init(int modelIndex, int suffixIndex, int menuNamesIndex);
 		};
 
-		Type type;
+		ArenaTypes::CityType type;
 		char typeDisplayName[16];
-		char levelFilename[16]; // .MIF name for most/all cases for now.
+		char mapFilename[16]; // .MIF name for most/all cases for now.
 
 		uint32_t citySeed;
 		uint32_t wildSeed;
@@ -58,12 +58,14 @@ public:
 		int cityBlocksPerSide;
 		bool coastal;
 		bool premade; // @todo: should be a nullable data struct instead, telling what kind of premade thing.
+		bool rulerIsMale;
+		bool palaceIsMainQuestDungeon;
 
-		void init(CityDefinition::Type type, const char *typeDisplayName, const char *levelFilename,
+		void init(ArenaTypes::CityType type, const char *typeDisplayName, const char *mapFilename,
 			uint32_t citySeed, uint32_t wildSeed, uint32_t provinceSeed, uint32_t rulerSeed,
 			uint32_t distantSkySeed, ClimateType climateType, const std::vector<uint8_t> *reservedBlocks,
 			WEInt blockStartPosX, SNInt blockStartPosY, const MainQuestTempleOverride *mainQuestTempleOverride,
-			int cityBlocksPerSide, bool coastal, bool premade);
+			int cityBlocksPerSide, bool coastal, bool premade, bool rulerIsMale, bool palaceIsMainQuestDungeon);
 
 		uint32_t getWildDungeonSeed(int wildBlockX, int wildBlockY) const;
 	};
@@ -87,10 +89,12 @@ public:
 		// StartDungeonDefinition to put the filename/etc. into.
 
 		Type type;
+		char mapFilename[16]; // .MIF name for all cases for now.
+
 		// @todo: misc quest/main quest items?
 		// @todo: main quest stage? Main quest splash?
 
-		void init(MainQuestDungeonDefinition::Type type);
+		void init(MainQuestDungeonDefinition::Type type, const char *mapFilename);
 	};
 private:
 	std::string name;
@@ -113,13 +117,12 @@ private:
 public:
 	// Initialize from original game data.
 	void initCity(int localCityID, int provinceID, bool coastal, bool premade,
-		CityDefinition::Type type, const MiscAssets &miscAssets);
+		ArenaTypes::CityType type, const BinaryAssetLibrary &binaryAssetLibrary);
 	void initDungeon(int localDungeonID, int provinceID, 
 		const CityDataFile::ProvinceData::LocationData &locationData,
 		const CityDataFile::ProvinceData &provinceData);
-	void initMainQuestDungeon(MainQuestDungeonDefinition::Type type,
-		const CityDataFile::ProvinceData::LocationData &locationData,
-		const CityDataFile::ProvinceData &provinceData, const ExeData &exeData);
+	void initMainQuestDungeon(const std::optional<int> &optLocalDungeonID, int provinceID,
+		MainQuestDungeonDefinition::Type type, const BinaryAssetLibrary &binaryAssetLibrary);
 	// @todo: eventually have init(const char *filename) for custom locations.
 
 	// Gets the display name of the location.
@@ -143,6 +146,9 @@ public:
 	const CityDefinition &getCityDefinition() const;
 	const DungeonDefinition &getDungeonDefinition() const;
 	const MainQuestDungeonDefinition &getMainQuestDungeonDefinition() const;
+
+	// Returns whether the two definitions reference the same location in a province.
+	bool matches(const LocationDefinition &other) const;
 };
 
 #endif

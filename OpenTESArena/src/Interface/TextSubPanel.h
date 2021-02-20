@@ -5,8 +5,8 @@
 #include <string>
 
 #include "Panel.h"
+#include "Texture.h"
 #include "../Math/Vector2.h"
-#include "../Rendering/Texture.h"
 
 // A simple sub-panel for displaying a text pop-up on-screen.
 
@@ -28,7 +28,7 @@ public:
 		const std::function<void(Game&)> &endingAction);
 	virtual ~TextSubPanel() = default;
 
-	virtual Panel::CursorData getCurrentCursor() const override;
+	virtual std::optional<Panel::CursorData> getCurrentCursor() const override;
 	virtual void handleEvent(const SDL_Event &e) override;
 	virtual void render(Renderer &renderer) override;
 };

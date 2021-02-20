@@ -6,51 +6,47 @@
 #include "CursorAlignment.h"
 #include "MessageBoxSubPanel.h"
 #include "RichTextString.h"
+#include "Surface.h"
 #include "TextAlignment.h"
 #include "TextBox.h"
 #include "TextSubPanel.h"
+#include "../Assets/ArenaTextureName.h"
 #include "../Assets/ExeData.h"
-#include "../Assets/MiscAssets.h"
 #include "../Assets/WorldMapMask.h"
-#include "../Entities/GenderName.h"
 #include "../Game/Game.h"
 #include "../Game/Options.h"
 #include "../Math/Rect.h"
 #include "../Media/Color.h"
-#include "../Media/FontManager.h"
+#include "../Media/FontLibrary.h"
 #include "../Media/FontName.h"
-#include "../Media/PaletteFile.h"
-#include "../Media/PaletteName.h"
-#include "../Media/TextureFile.h"
 #include "../Media/TextureManager.h"
-#include "../Media/TextureName.h"
+#include "../Rendering/ArenaRenderUtils.h"
 #include "../Rendering/Renderer.h"
-#include "../Rendering/Surface.h"
 #include "../World/LocationUtils.h"
 
 #include "components/utilities/String.h"
 
-const int ChooseRacePanel::NO_ID = -1;
-
-ChooseRacePanel::ChooseRacePanel(Game &game, const CharacterClass &charClass,
-	const std::string &name, GenderName gender)
-	: Panel(game), charClass(charClass), name(name), gender(gender)
+ChooseRacePanel::ChooseRacePanel(Game &game)
+	: Panel(game)
 {
 	this->backToGenderButton = []()
 	{
-		auto function = [](Game &game, const CharacterClass &charClass,
-			const std::string &name)
+		auto function = [](Game &game)
 		{
-			game.setPanel<ChooseGenderPanel>(game, charClass, name);
+			game.setPanel<ChooseGenderPanel>(game);
 		};
-		return Button<Game&, const CharacterClass&, const std::string&>(function);
+
+		return Button<Game&>(function);
 	}();
 
 	this->acceptButton = []()
 	{
-		auto function = [](Game &game, const CharacterClass &charClass,
-			const std::string &name, GenderName gender, int raceID)
+		auto function = [](Game &game, int raceIndex)
 		{
+			// Set character creation race index.
+			auto &charCreationState = game.getCharacterCreationState();
+			charCreationState.setRaceIndex(raceIndex);
+
 			// Generate the race selection message box.
 			auto &textureManager = game.getTextureManager();
 			auto &renderer = game.getRenderer();
@@ -58,15 +54,22 @@ ChooseRacePanel::ChooseRacePanel(Game &game, const CharacterClass &charClass,
 			const Color textColor(52, 24, 8);
 
 			MessageBoxSubPanel::Title messageBoxTitle;
-			messageBoxTitle.textBox = [&game, raceID, &renderer, &textColor]()
+			messageBoxTitle.textBox = [&game, &renderer, &textColor]()
 			{
-				const auto &exeData = game.getMiscAssets().getExeData();
+				const auto &exeData = game.getBinaryAssetLibrary().getExeData();
 				std::string text = exeData.charCreation.confirmRace;
 				text = String::replace(text, '\r', '\n');
 
-				const std::string &provinceName =
-					exeData.locations.charCreationProvinceNames.at(raceID);
-				const std::string &pluralRaceName = exeData.races.pluralNames.at(raceID);
+				const auto &charCreationState = game.getCharacterCreationState();
+				const int raceIndex = charCreationState.getRaceIndex();
+
+				const auto &charCreationProvinceNames = exeData.locations.charCreationProvinceNames;
+				DebugAssertIndex(charCreationProvinceNames, raceIndex);
+				const std::string &provinceName = charCreationProvinceNames[raceIndex];
+
+				const auto &pluralRaceNames = exeData.races.pluralNames;
+				DebugAssertIndex(pluralRaceNames, raceIndex);
+				const std::string &pluralRaceName = pluralRaceNames[raceIndex];
 
 				// Replace first %s with province name.
 				size_t index = text.find("%s");
@@ -77,59 +80,61 @@ ChooseRacePanel::ChooseRacePanel(Game &game, const CharacterClass &charClass,
 				text.replace(index, 2, pluralRaceName);
 
 				const int lineSpacing = 1;
+				const auto &fontLibrary = game.getFontLibrary();
 				const RichTextString richText(
 					text,
 					FontName::A,
 					textColor,
 					TextAlignment::Center,
 					lineSpacing,
-					game.getFontManager());
+					fontLibrary);
 
 				const Int2 center(
-					(Renderer::ORIGINAL_WIDTH / 2),
-					(Renderer::ORIGINAL_HEIGHT / 2) - 22);
+					(ArenaRenderUtils::SCREEN_WIDTH / 2),
+					(ArenaRenderUtils::SCREEN_HEIGHT / 2) - 22);
 
-				return std::make_unique<TextBox>(center, richText, renderer);
+				return std::make_unique<TextBox>(center, richText, fontLibrary, renderer);
 			}();
 
 			messageBoxTitle.texture = [&textureManager, &renderer, &messageBoxTitle]()
 			{
 				const int width = messageBoxTitle.textBox->getRect().getWidth() + 22;
 				const int height = 60;
-				return Texture::generate(Texture::PatternType::Parchment, width, height,
+				return TextureUtils::generate(TextureUtils::PatternType::Parchment, width, height,
 					textureManager, renderer);
 			}();
 
-			messageBoxTitle.textureX = (Renderer::ORIGINAL_WIDTH / 2) -
+			messageBoxTitle.textureX = (ArenaRenderUtils::SCREEN_WIDTH / 2) -
 				(messageBoxTitle.texture.getWidth() / 2) - 1;
-			messageBoxTitle.textureY = (Renderer::ORIGINAL_HEIGHT / 2) -
+			messageBoxTitle.textureY = (ArenaRenderUtils::SCREEN_HEIGHT / 2) -
 				(messageBoxTitle.texture.getHeight() / 2) - 21;
 
 			MessageBoxSubPanel::Element messageBoxYes;
 			messageBoxYes.textBox = [&game, &renderer, &textColor]()
 			{
+				const auto &fontLibrary = game.getFontLibrary();
 				const RichTextString richText(
 					"Yes",
 					FontName::A,
 					textColor,
 					TextAlignment::Center,
-					game.getFontManager());
+					fontLibrary);
 
 				const Int2 center(
-					(Renderer::ORIGINAL_WIDTH / 2) - 1,
-					(Renderer::ORIGINAL_HEIGHT / 2) + 28);
+					(ArenaRenderUtils::SCREEN_WIDTH / 2) - 1,
+					(ArenaRenderUtils::SCREEN_HEIGHT / 2) + 28);
 
-				return std::make_unique<TextBox>(center, richText, renderer);
+				return std::make_unique<TextBox>(center, richText, fontLibrary, renderer);
 			}();
 
 			messageBoxYes.texture = [&textureManager, &renderer, &messageBoxTitle]()
 			{
 				const int width = messageBoxTitle.texture.getWidth();
-				return Texture::generate(Texture::PatternType::Parchment, width, 40,
+				return TextureUtils::generate(TextureUtils::PatternType::Parchment, width, 40,
 					textureManager, renderer);
 			}();
 
-			messageBoxYes.function = [&charClass, &name, gender, raceID](Game &game)
+			messageBoxYes.function = [](Game &game)
 			{
 				game.popSubPanel();
 
@@ -137,21 +142,21 @@ ChooseRacePanel::ChooseRacePanel(Game &game, const CharacterClass &charClass,
 
 				// Generate all of the parchments leading up to the attributes panel,
 				// and link them together so they appear after each other.
-				auto toAttributes = [&charClass, &name, gender, raceID](Game &game)
+				auto toAttributes = [](Game &game)
 				{
 					game.popSubPanel();
-					game.setPanel<ChooseAttributesPanel>(game, charClass, name, gender, raceID);
+					game.setPanel<ChooseAttributesPanel>(game);
 				};
 
 				auto toFourthSubPanel = [textColor, toAttributes](Game &game)
 				{
 					game.popSubPanel();
 
-					const Int2 center((Renderer::ORIGINAL_WIDTH / 2) - 1, 98);
+					const Int2 center((ArenaRenderUtils::SCREEN_WIDTH / 2) - 1, 98);
 
 					const std::string text = [&game]()
 					{
-						const auto &exeData = game.getMiscAssets().getExeData();
+						const auto &exeData = game.getBinaryAssetLibrary().getExeData();
 						std::string segment = exeData.charCreation.confirmedRace4;
 						segment = String::replace(segment, '\r', '\n');
 
@@ -166,16 +171,16 @@ ChooseRacePanel::ChooseRacePanel(Game &game, const CharacterClass &charClass,
 						textColor,
 						TextAlignment::Center,
 						lineSpacing,
-						game.getFontManager());
+						game.getFontLibrary());
 
 					const int textureHeight = std::max(richText.getDimensions().y + 8, 40);
-					Texture texture = Texture::generate(Texture::PatternType::Parchment,
+					Texture texture = TextureUtils::generate(TextureUtils::PatternType::Parchment,
 						richText.getDimensions().x + 20, textureHeight,
 						game.getTextureManager(), game.getRenderer());
 
 					const Int2 textureCenter(
-						(Renderer::ORIGINAL_WIDTH / 2) - 1,
-						(Renderer::ORIGINAL_HEIGHT / 2) - 1);
+						(ArenaRenderUtils::SCREEN_WIDTH / 2) - 1,
+						(ArenaRenderUtils::SCREEN_HEIGHT / 2) - 1);
 
 					auto fourthSubPanel = std::make_unique<TextSubPanel>(
 						game, center, richText, toAttributes, std::move(texture),
@@ -184,28 +189,35 @@ ChooseRacePanel::ChooseRacePanel(Game &game, const CharacterClass &charClass,
 					game.pushSubPanel(std::move(fourthSubPanel));
 				};
 
-				auto toThirdSubPanel = [&charClass, textColor, toFourthSubPanel](Game &game)
+				auto toThirdSubPanel = [textColor, toFourthSubPanel](Game &game)
 				{
 					game.popSubPanel();
 
-					const Int2 center((Renderer::ORIGINAL_WIDTH / 2) - 1, 98);
+					const Int2 center((ArenaRenderUtils::SCREEN_WIDTH / 2) - 1, 98);
 
-					const std::string text = [&game, &charClass]()
+					const std::string text = [&game]()
 					{
-						const auto &exeData = game.getMiscAssets().getExeData();
+						const auto &binaryAssetLibrary = game.getBinaryAssetLibrary();
+						const auto &exeData = binaryAssetLibrary.getExeData();
 						std::string segment = exeData.charCreation.confirmedRace3;
 						segment = String::replace(segment, '\r', '\n');
 
-						const std::string &preferredAttributes =
-							exeData.charClasses.preferredAttributes.at(charClass.getClassIndex());
+						const auto &charCreationState = game.getCharacterCreationState();
+						const auto &charClassLibrary = game.getCharacterClassLibrary();
+						const int charClassDefID = charCreationState.getClassDefID();
+						const auto &charClassDef = charClassLibrary.getDefinition(charClassDefID);
+
+						const auto &preferredAttributes = exeData.charClasses.preferredAttributes;
+						DebugAssertIndex(preferredAttributes, charClassDefID);
+						const std::string &preferredAttributesStr = preferredAttributes[charClassDefID];
 
 						// Replace first %s with desired class attributes.
 						size_t index = segment.find("%s");
-						segment.replace(index, 2, preferredAttributes);
+						segment.replace(index, 2, preferredAttributesStr);
 
 						// Replace second %s with class name.
 						index = segment.find("%s");
-						segment.replace(index, 2, charClass.getName());
+						segment.replace(index, 2, charClassDef.getName());
 
 						return segment;
 					}();
@@ -218,16 +230,16 @@ ChooseRacePanel::ChooseRacePanel(Game &game, const CharacterClass &charClass,
 						textColor,
 						TextAlignment::Center,
 						lineSpacing,
-						game.getFontManager());
+						game.getFontLibrary());
 
 					const int textureHeight = std::max(richText.getDimensions().y + 18, 40);
-					Texture texture = Texture::generate(Texture::PatternType::Parchment,
+					Texture texture = TextureUtils::generate(TextureUtils::PatternType::Parchment,
 						richText.getDimensions().x + 20, textureHeight,
 						game.getTextureManager(), game.getRenderer());
 
 					const Int2 textureCenter(
-						(Renderer::ORIGINAL_WIDTH / 2) - 1,
-						(Renderer::ORIGINAL_HEIGHT / 2) - 1);
+						(ArenaRenderUtils::SCREEN_WIDTH / 2) - 1,
+						(ArenaRenderUtils::SCREEN_HEIGHT / 2) - 1);
 
 					auto thirdSubPanel = std::make_unique<TextSubPanel>(
 						game, center, richText, toFourthSubPanel, std::move(texture),
@@ -236,26 +248,30 @@ ChooseRacePanel::ChooseRacePanel(Game &game, const CharacterClass &charClass,
 					game.pushSubPanel(std::move(thirdSubPanel));
 				};
 
-				auto toSecondSubPanel = [raceID, textColor, toThirdSubPanel](Game &game)
+				auto toSecondSubPanel = [textColor, toThirdSubPanel](Game &game)
 				{
 					game.popSubPanel();
 
-					const Int2 center((Renderer::ORIGINAL_WIDTH / 2) - 1, 98);
+					const Int2 center((ArenaRenderUtils::SCREEN_WIDTH / 2) - 1, 98);
 
-					const std::string text = [&game, raceID]()
+					const std::string text = [&game]()
 					{
-						const auto &exeData = game.getMiscAssets().getExeData();
+						const auto &exeData = game.getBinaryAssetLibrary().getExeData();
 						std::string segment = exeData.charCreation.confirmedRace2;
 						segment = String::replace(segment, '\r', '\n');
 
+						const auto &charCreationState = game.getCharacterCreationState();
+						const int raceIndex = charCreationState.getRaceIndex();
+
 						// Get race description from TEMPLATE.DAT.
-						const std::array<int, 8> raceTemplateIDs =
+						const auto &templateDat = game.getTextAssetLibrary().getTemplateDat();
+						constexpr std::array<int, 8> raceTemplateIDs =
 						{
 							1409, 1410, 1411, 1412, 1413, 1414, 1415, 1416
 						};
 
-						const auto &templateDat = game.getMiscAssets().getTemplateDat();
-						const auto &entry = templateDat.getEntry(raceTemplateIDs.at(raceID));
+						DebugAssertIndex(raceTemplateIDs, raceIndex);
+						const auto &entry = templateDat.getEntry(raceTemplateIDs[raceIndex]);
 						std::string raceDescription = entry.values.front();
 
 						// Re-distribute newlines at 40 character limit.
@@ -275,16 +291,16 @@ ChooseRacePanel::ChooseRacePanel(Game &game, const CharacterClass &charClass,
 						textColor,
 						TextAlignment::Center,
 						lineSpacing,
-						game.getFontManager());
+						game.getFontLibrary());
 
 					const int textureHeight = std::max(richText.getDimensions().y + 14, 40);
-					Texture texture = Texture::generate(Texture::PatternType::Parchment,
+					Texture texture = TextureUtils::generate(TextureUtils::PatternType::Parchment,
 						richText.getDimensions().x + 20, textureHeight,
 						game.getTextureManager(), game.getRenderer());
 
 					const Int2 textureCenter(
-						(Renderer::ORIGINAL_WIDTH / 2) - 1,
-						(Renderer::ORIGINAL_HEIGHT / 2) - 1);
+						(ArenaRenderUtils::SCREEN_WIDTH / 2) - 1,
+						(ArenaRenderUtils::SCREEN_HEIGHT / 2) - 1);
 
 					auto secondSubPanel = std::make_unique<TextSubPanel>(
 						game, center, richText, toThirdSubPanel, std::move(texture),
@@ -293,28 +309,39 @@ ChooseRacePanel::ChooseRacePanel(Game &game, const CharacterClass &charClass,
 					game.pushSubPanel(std::move(secondSubPanel));
 				};
 
-				std::unique_ptr<Panel> firstSubPanel = [&game, &charClass,
-					&name, gender, raceID, &textColor, toSecondSubPanel]()
+				std::unique_ptr<Panel> firstSubPanel = [&game, &textColor, toSecondSubPanel]()
 				{
-					const Int2 center((Renderer::ORIGINAL_WIDTH / 2) - 1, 98);
+					const Int2 center((ArenaRenderUtils::SCREEN_WIDTH / 2) - 1, 98);
 
-					const std::string text = [&game, &charClass, &name, gender, raceID]()
+					const std::string text = [&game]()
 					{
-						const auto &exeData = game.getMiscAssets().getExeData();
+						const auto &binaryAssetLibrary = game.getBinaryAssetLibrary();
+						const auto &exeData = binaryAssetLibrary.getExeData();
 						std::string segment = exeData.charCreation.confirmedRace1;
 						segment = String::replace(segment, '\r', '\n');
 
-						const std::string &provinceName =
-							exeData.locations.charCreationProvinceNames.at(raceID);
-						const std::string &pluralRaceName = exeData.races.pluralNames.at(raceID);
+						const auto &charCreationState = game.getCharacterCreationState();
+						const int raceIndex = charCreationState.getRaceIndex();
+
+						const auto &charCreationProvinceNames = exeData.locations.charCreationProvinceNames;						
+						DebugAssertIndex(charCreationProvinceNames, raceIndex);
+						const std::string &provinceName = charCreationProvinceNames[raceIndex];
+
+						const auto &pluralRaceNames = exeData.races.pluralNames;
+						DebugAssertIndex(pluralRaceNames, raceIndex);
+						const std::string &pluralRaceName = pluralRaceNames[raceIndex];
+
+						const auto &charClassLibrary = game.getCharacterClassLibrary();
+						const int charClassDefID = charCreationState.getClassDefID();
+						const auto &charClassDef = charClassLibrary.getDefinition(charClassDefID);
 
 						// Replace first %s with player class.
 						size_t index = segment.find("%s");
-						segment.replace(index, 2, charClass.getName());
+						segment.replace(index, 2, charClassDef.getName());
 
 						// Replace second %s with player name.
 						index = segment.find("%s");
-						segment.replace(index, 2, name);
+						segment.replace(index, 2, charCreationState.getName());
 
 						// Replace third %s with province name.
 						index = segment.find("%s");
@@ -325,7 +352,7 @@ ChooseRacePanel::ChooseRacePanel(Game &game, const CharacterClass &charClass,
 						segment.replace(index, 2, pluralRaceName);
 
 						// If player is female, replace "his" with "her".
-						if (gender == GenderName::Female)
+						if (!charCreationState.isMale())
 						{
 							index = segment.rfind("his");
 							segment.replace(index, 3, "her");
@@ -342,16 +369,16 @@ ChooseRacePanel::ChooseRacePanel(Game &game, const CharacterClass &charClass,
 						textColor,
 						TextAlignment::Center,
 						lineSpacing,
-						game.getFontManager());
+						game.getFontLibrary());
 
 					const int textureHeight = std::max(richText.getDimensions().y, 40);
-					Texture texture = Texture::generate(Texture::PatternType::Parchment,
+					Texture texture = TextureUtils::generate(TextureUtils::PatternType::Parchment,
 						richText.getDimensions().x + 20, textureHeight,
 						game.getTextureManager(), game.getRenderer());
 
 					const Int2 textureCenter(
-						(Renderer::ORIGINAL_WIDTH / 2) - 1,
-						(Renderer::ORIGINAL_HEIGHT / 2) - 1);
+						(ArenaRenderUtils::SCREEN_WIDTH / 2) - 1,
+						(ArenaRenderUtils::SCREEN_HEIGHT / 2) - 1);
 
 					return std::make_unique<TextSubPanel>(game, center, richText,
 						toSecondSubPanel, std::move(texture), textureCenter);
@@ -367,36 +394,35 @@ ChooseRacePanel::ChooseRacePanel(Game &game, const CharacterClass &charClass,
 			MessageBoxSubPanel::Element messageBoxNo;
 			messageBoxNo.textBox = [&game, &renderer, &textColor]()
 			{
+				const auto &fontLibrary = game.getFontLibrary();
 				const RichTextString richText(
 					"No",
 					FontName::A,
 					textColor,
 					TextAlignment::Center,
-					game.getFontManager());
+					fontLibrary);
 
 				const Int2 center(
-					(Renderer::ORIGINAL_WIDTH / 2) - 1,
-					(Renderer::ORIGINAL_HEIGHT / 2) + 68);
+					(ArenaRenderUtils::SCREEN_WIDTH / 2) - 1,
+					(ArenaRenderUtils::SCREEN_HEIGHT / 2) + 68);
 
-				return std::make_unique<TextBox>(center, richText, renderer);
+				return std::make_unique<TextBox>(center, richText, fontLibrary, renderer);
 			}();
 
 			messageBoxNo.texture = [&textureManager, &renderer, &messageBoxYes]()
 			{
 				const int width = messageBoxYes.texture.getWidth();
 				const int height = messageBoxYes.texture.getHeight();
-				return Texture::generate(Texture::PatternType::Parchment, width, height,
+				return TextureUtils::generate(TextureUtils::PatternType::Parchment, width, height,
 					textureManager, renderer);
 			}();
 
-			messageBoxNo.function = [&charClass, &name](Game &game)
+			messageBoxNo.function = [](Game &game)
 			{
 				game.popSubPanel();
 
 				// Push the initial text sub-panel.
-				std::unique_ptr<Panel> textSubPanel =
-					ChooseRacePanel::getInitialSubPanel(game, charClass, name);
-
+				std::unique_ptr<Panel> textSubPanel = ChooseRacePanel::getInitialSubPanel(game);
 				game.pushSubPanel(std::move(textSubPanel));
 			};
 
@@ -415,39 +441,42 @@ ChooseRacePanel::ChooseRacePanel(Game &game, const CharacterClass &charClass,
 
 			game.pushSubPanel(std::move(messageBox));
 		};
-		return Button<Game&, const CharacterClass&,
-			const std::string&, GenderName, int>(function);
+
+		return Button<Game&, int>(function);
 	}();
 
 	// @todo: maybe allocate std::unique_ptr<std::function> for unravelling the map?
 	// When done, set to null and push initial parchment sub-panel?
 
 	// Push the initial text sub-panel.
-	std::unique_ptr<Panel> textSubPanel =
-		ChooseRacePanel::getInitialSubPanel(game, charClass, name);
-
+	std::unique_ptr<Panel> textSubPanel = ChooseRacePanel::getInitialSubPanel(game);
 	game.pushSubPanel(std::move(textSubPanel));
 }
 
-std::unique_ptr<Panel> ChooseRacePanel::getInitialSubPanel(Game &game,
-	const CharacterClass &charClass, const std::string &name)
+std::unique_ptr<Panel> ChooseRacePanel::getInitialSubPanel(Game &game)
 {
-	const Int2 center((Renderer::ORIGINAL_WIDTH / 2) - 1, 98);
+	const Int2 center((ArenaRenderUtils::SCREEN_WIDTH / 2) - 1, 98);
 	const Color color(48, 12, 12);
 
-	const std::string text = [&game, &charClass, &name]()
+	const std::string text = [&game]()
 	{
-		const auto &exeData = game.getMiscAssets().getExeData();
+		const auto &binaryAssetLibrary = game.getBinaryAssetLibrary();
+		const auto &exeData = binaryAssetLibrary.getExeData();
 		std::string segment = exeData.charCreation.chooseRace;
 		segment = String::replace(segment, '\r', '\n');
 
+		const auto &charCreationState = game.getCharacterCreationState();
+		const auto &charClassLibrary = game.getCharacterClassLibrary();
+		const int charClassDefID = charCreationState.getClassDefID();
+		const auto &charClassDef = charClassLibrary.getDefinition(charClassDefID);
+
 		// Replace first "%s" with player name.
 		size_t index = segment.find("%s");
-		segment.replace(index, 2, name);
+		segment.replace(index, 2, charCreationState.getName());
 
 		// Replace second "%s" with character class.
 		index = segment.find("%s");
-		segment.replace(index, 2, charClass.getName());
+		segment.replace(index, 2, charClassDef.getName());
 
 		return segment;
 	}();
@@ -460,14 +489,14 @@ std::unique_ptr<Panel> ChooseRacePanel::getInitialSubPanel(Game &game,
 		color,
 		TextAlignment::Center,
 		lineSpacing,
-		game.getFontManager());
+		game.getFontLibrary());
 
-	Texture texture = Texture::generate(Texture::PatternType::Parchment, 240, 60,
+	Texture texture = TextureUtils::generate(TextureUtils::PatternType::Parchment, 240, 60,
 		game.getTextureManager(), game.getRenderer());
 
 	const Int2 textureCenter(
-		(Renderer::ORIGINAL_WIDTH / 2) - 1,
-		(Renderer::ORIGINAL_HEIGHT / 2) - 1);
+		(ArenaRenderUtils::SCREEN_WIDTH / 2) - 1,
+		(ArenaRenderUtils::SCREEN_HEIGHT / 2) - 1);
 
 	auto function = [](Game &game)
 	{
@@ -480,7 +509,7 @@ std::unique_ptr<Panel> ChooseRacePanel::getInitialSubPanel(Game &game,
 
 int ChooseRacePanel::getProvinceMaskID(const Int2 &position) const
 {
-	const auto &worldMapMasks = this->getGame().getMiscAssets().getWorldMapMasks();
+	const auto &worldMapMasks = this->getGame().getBinaryAssetLibrary().getWorldMapMasks();
 	const int maskCount = static_cast<int>(worldMapMasks.size());
 	for (int maskID = 0; maskID < maskCount; maskID++)
 	{
@@ -511,20 +540,15 @@ int ChooseRacePanel::getProvinceMaskID(const Int2 &position) const
 	return ChooseRacePanel::NO_ID;
 }
 
-Panel::CursorData ChooseRacePanel::getCurrentCursor() const
+std::optional<Panel::CursorData> ChooseRacePanel::getCurrentCursor() const
 {
-	auto &game = this->getGame();
-	auto &renderer = game.getRenderer();
-	auto &textureManager = game.getTextureManager();
-	const auto &texture = textureManager.getTexture(
-		TextureFile::fromName(TextureName::SwordCursor),
-		PaletteFile::fromName(PaletteName::Default), renderer);
-	return CursorData(&texture, CursorAlignment::TopLeft);
+	return this->getDefaultCursor();
 }
 
 void ChooseRacePanel::handleEvent(const SDL_Event &e)
 {
-	const auto &inputManager = this->getGame().getInputManager();
+	auto &game = this->getGame();
+	const auto &inputManager = game.getInputManager();
 	bool escapePressed = inputManager.keyPressed(e, SDLK_ESCAPE);
 	bool leftClick = inputManager.mouseButtonPressed(e, SDL_BUTTON_LEFT);
 	bool rightClick = inputManager.mouseButtonPressed(e, SDL_BUTTON_RIGHT);
@@ -532,21 +556,19 @@ void ChooseRacePanel::handleEvent(const SDL_Event &e)
 	// Interact with the map screen.
 	if (escapePressed)
 	{
-		this->backToGenderButton.click(this->getGame(), this->charClass, this->name);
+		this->backToGenderButton.click(game);
 	}
 	else if (leftClick)
 	{
 		const Int2 mousePosition = inputManager.getMousePosition();
-		const Int2 originalPoint = this->getGame().getRenderer()
-			.nativeToOriginal(mousePosition);
+		const Int2 originalPoint = game.getRenderer().nativeToOriginal(mousePosition);
 
 		// Listen for clicks on the map, checking if the mouse is over a province mask.
 		const int maskID = this->getProvinceMaskID(originalPoint);
 		if (maskID != ChooseRacePanel::NO_ID)
 		{
 			// Choose the selected province.
-			this->acceptButton.click(this->getGame(), this->charClass,
-				this->name, this->gender, maskID);
+			this->acceptButton.click(game, maskID);
 		}
 	}
 }
@@ -554,20 +576,20 @@ void ChooseRacePanel::handleEvent(const SDL_Event &e)
 void ChooseRacePanel::drawProvinceTooltip(int provinceID, Renderer &renderer)
 {
 	// Get the race name associated with the province.
-	const auto &exeData = this->getGame().getMiscAssets().getExeData();
+	const auto &exeData = this->getGame().getBinaryAssetLibrary().getExeData();
 	const std::string &raceName = exeData.races.pluralNames.at(provinceID);
 
 	const Texture tooltip = Panel::createTooltip(
-		"Land of the " + raceName, FontName::D, this->getGame().getFontManager(), renderer);
+		"Land of the " + raceName, FontName::D, this->getGame().getFontLibrary(), renderer);
 
 	const auto &inputManager = this->getGame().getInputManager();
 	const Int2 mousePosition = inputManager.getMousePosition();
 	const Int2 originalPosition = renderer.nativeToOriginal(mousePosition);
 	const int mouseX = originalPosition.x;
 	const int mouseY = originalPosition.y;
-	const int x = ((mouseX + 8 + tooltip.getWidth()) < Renderer::ORIGINAL_WIDTH) ?
+	const int x = ((mouseX + 8 + tooltip.getWidth()) < ArenaRenderUtils::SCREEN_WIDTH) ?
 		(mouseX + 8) : (mouseX - tooltip.getWidth());
-	const int y = ((mouseY + tooltip.getHeight()) < Renderer::ORIGINAL_HEIGHT) ?
+	const int y = ((mouseY + tooltip.getHeight()) < ArenaRenderUtils::SCREEN_HEIGHT) ?
 		mouseY : (mouseY - tooltip.getHeight());
 
 	renderer.drawOriginal(tooltip, x, y);
@@ -578,23 +600,40 @@ void ChooseRacePanel::render(Renderer &renderer)
 	// Clear full screen.
 	renderer.clear();
 
-	// Set palette.
-	auto &textureManager = this->getGame().getTextureManager();
-	textureManager.setPalette(PaletteFile::fromName(PaletteName::Default));
-
 	// Draw background map.
-	const auto &raceSelectMap = textureManager.getTexture(
-		TextureFile::fromName(TextureName::RaceSelect),
-		PaletteFile::fromName(PaletteName::BuiltIn), renderer);
-	renderer.drawOriginal(raceSelectMap);
+	auto &textureManager = this->getGame().getTextureManager();
+	const std::string &raceSelectFilename = ArenaTextureName::RaceSelect;
+	const std::optional<PaletteID> raceSelectPaletteID = textureManager.tryGetPaletteID(raceSelectFilename.c_str());
+	if (!raceSelectPaletteID.has_value())
+	{
+		DebugLogError("Couldn't get race select palette ID for \"" + raceSelectFilename + "\".");
+		return;
+	}
+
+	const std::optional<TextureBuilderID> raceSelectTextureBuilderID =
+		textureManager.tryGetTextureBuilderID(raceSelectFilename.c_str());
+	if (!raceSelectTextureBuilderID.has_value())
+	{
+		DebugLogError("Couldn't get race select texture builder ID for \"" + raceSelectFilename + "\".");
+		return;
+	}
+
+	renderer.drawOriginal(*raceSelectTextureBuilderID, *raceSelectPaletteID, textureManager);
 
 	// Arena just covers up the "exit" text at the bottom right.
-	const auto &exitCover = textureManager.getTexture(
-		TextureFile::fromName(TextureName::NoExit),
-		TextureFile::fromName(TextureName::RaceSelect), renderer);
-	renderer.drawOriginal(exitCover,
-		Renderer::ORIGINAL_WIDTH - exitCover.getWidth(),
-		Renderer::ORIGINAL_HEIGHT - exitCover.getHeight());
+	const std::string &exitCoverFilename = ArenaTextureName::NoExit;
+	const std::optional<TextureBuilderID> exitCoverTextureBuilderID =
+		textureManager.tryGetTextureBuilderID(exitCoverFilename.c_str());
+	if (!exitCoverTextureBuilderID.has_value())
+	{
+		DebugLogError("Couldn't get exit cover texture builder ID for \"" + exitCoverFilename + "\".");
+		return;
+	}
+
+	const TextureBuilder &exitCoverTextureBuilder = textureManager.getTextureBuilderHandle(*exitCoverTextureBuilderID);
+	const int exitCoverX = ArenaRenderUtils::SCREEN_WIDTH - exitCoverTextureBuilder.getWidth();
+	const int exitCoverY = ArenaRenderUtils::SCREEN_HEIGHT - exitCoverTextureBuilder.getHeight();
+	renderer.drawOriginal(*exitCoverTextureBuilderID, *raceSelectPaletteID, exitCoverX, exitCoverY, textureManager);
 }
 
 void ChooseRacePanel::renderSecondary(Renderer &renderer)
@@ -603,8 +642,7 @@ void ChooseRacePanel::renderSecondary(Renderer &renderer)
 	const Int2 mousePosition = inputManager.getMousePosition();
 
 	// Draw hovered province tooltip.
-	const Int2 originalPoint = this->getGame().getRenderer()
-		.nativeToOriginal(mousePosition);
+	const Int2 originalPoint = this->getGame().getRenderer().nativeToOriginal(mousePosition);
 
 	// Draw tooltip if the mouse is in a province.
 	const int maskID = this->getProvinceMaskID(originalPoint);

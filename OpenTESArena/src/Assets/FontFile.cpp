@@ -3,9 +3,6 @@
 #include <string>
 
 #include "FontFile.h"
-#include "../Media/Color.h"
-#include "../Media/Font.h"
-#include "../Media/FontName.h"
 
 #include "components/debug/Debug.h"
 #include "components/vfs/manager.hpp"
@@ -89,21 +86,16 @@ bool FontFile::init(const char *filename)
 	this->characterHeight = charHeight;
 	this->characters.resize(symbols.size());
 
-	// Colors for setting pixels.
-	const uint32_t transparent = Color(0, 0, 0, 0).toARGB();
-	const uint32_t white = Color(255, 255, 255, 255).toARGB();
-
 	// Adapted from WinArena "Raster.cpp".
 	for (size_t i = 0; i < symbols.size(); i++)
 	{
 		// Use white for pixels and transparent for background.
 		FontElement &element = symbols[i];
 
-		auto &pair = this->characters.at(i);
-		pair = std::make_pair(element.width,
-			std::make_unique<uint32_t[]>(element.width * element.height));
+		Buffer2D<Pixel> &character = this->characters.at(i);
+		character.init(element.width, element.height);
 
-		uint32_t *pixels = pair.second.get();
+		Pixel *charPixels = character.get();
 		for (uint32_t cy = 0; cy < element.height; cy++)
 		{
 			uint16_t mask = 0x8000;
@@ -113,8 +105,8 @@ bool FontFile::init(const char *filename)
 			{
 				const int index = cx + (cy * element.width);
 
-				// Color the pixel white if the character's bit is set there.
-				pixels[index] = ((bits & mask) != 0) ? white : transparent;
+				// Color the pixel 'true' if the character's bit is set there.
+				charPixels[index] = (bits & mask) != 0;
 
 				mask >>= 1;
 			}
@@ -124,21 +116,43 @@ bool FontFile::init(const char *filename)
 	return true;
 }
 
-int FontFile::getWidth(char c) const
+bool FontFile::tryGetCharacterIndex(char c, int *outIndex)
 {
-	// If an invalid character is requested, print a warning and return
-	// a default character.
+	// Space (ASCII 32) is at index 0.
 	if ((c < 32) || (c > 127))
 	{
-		DebugLogWarning("Character value \"" + std::to_string(c) + 
+		DebugLogWarning("Character value \"" + std::string(1, c) +
 			"\" out of range (must be ASCII 32-127).");
-		DebugAssert(this->characters.size() > 0);
-		return this->characters[0].first;
+		return false;
 	}
 
+	*outIndex = c - 32;
+	return true;
+}
+
+bool FontFile::tryGetChar(int index, char *outChar)
+{
 	// Space (ASCII 32) is at index 0.
-	const int index = DebugMakeIndex(this->characters, c - 32);
-	return this->characters[index].first;
+	if ((index < 0) || (index > 95))
+	{
+		DebugLogWarning("Character index \"" + std::to_string(index) +
+			"\" out of range (must be 0-95).");
+		return false;
+	}
+
+	*outChar = index + 32;
+	return true;
+}
+
+int FontFile::getCharacterCount() const
+{
+	return static_cast<int>(this->characters.size());
+}
+
+int FontFile::getWidth(int index) const
+{
+	DebugAssertIndex(this->characters, index);
+	return this->characters[index].getWidth();
 }
 
 int FontFile::getHeight() const
@@ -146,19 +160,8 @@ int FontFile::getHeight() const
 	return this->characterHeight;
 }
 
-uint32_t *FontFile::getPixels(char c) const
+const FontFile::Pixel *FontFile::getPixels(int index) const
 {
-	// If an invalid character is requested, print a warning and return
-	// a default character.
-	if ((c < 32) || (c > 127))
-	{
-		DebugLogWarning("Character value \"" + std::to_string(c) +
-			"\" out of range (must be ASCII 32-127).");
-		DebugAssert(this->characters.size() > 0);
-		return this->characters[0].second.get();
-	}
-
-	// Space (ASCII 32) is at index 0.
-	const int index = DebugMakeIndex(this->characters, c - 32);
-	return this->characters[index].second.get();
+	DebugAssertIndex(this->characters, index);
+	return this->characters[index].get();
 }

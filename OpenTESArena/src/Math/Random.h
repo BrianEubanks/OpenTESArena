@@ -2,6 +2,7 @@
 #define RANDOM_H
 
 #include <cstdint>
+#include <limits>
 #include <random>
 
 class Random
@@ -17,13 +18,19 @@ public:
 	// Initialized with the current time.
 	Random();
 
+	// Initialized with the given seed.
+	void init(int seed);
+
+	// Initialized with the current time.
+	void init();
+
 	// Includes 0 to ~2.14 billion.
 	int next();
 
 	// Includes 0 to (exclusiveMax - 1).
 	int next(int exclusiveMax);
 
-	// Includes 0.0 to 1.0.
+	// Includes [0.0, 1.0).
 	double nextReal();
 };
 
@@ -31,14 +38,14 @@ public:
 class ArenaRandom
 {
 private:
-	static const uint32_t DEFAULT_SEED;
+	static constexpr uint32_t DEFAULT_SEED = 12345;
 
 	uint32_t value;
 public:
 	ArenaRandom(uint32_t seed);
 	ArenaRandom();
 
-	static const int MAX;
+	static constexpr int MAX = std::numeric_limits<uint16_t>::max();
 
 	uint32_t getSeed() const;
 	int next();

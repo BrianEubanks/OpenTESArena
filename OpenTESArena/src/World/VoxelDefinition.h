@@ -1,103 +1,85 @@
 #ifndef VOXEL_DEFINITION_H
 #define VOXEL_DEFINITION_H
 
-#include "../Math/Vector3.h"
+#include "../Assets/ArenaTypes.h"
+#include "../Assets/TextureAssetReference.h"
 
-// The definition of a voxel that a voxel ID points to. Since there will only be a few kinds
-// of voxel data per world, their size can be much larger than just a byte or two.
+#include "components/utilities/Buffer.h"
 
-// A voxel's definition is used for multiple things, such as rendering, collision detection,
-// and color-coding on the automap.
+// The definition that a voxel ID points to, used for rendering, collision detection, and coloring automap voxels.
 
-enum class VoxelDataType;
-enum class VoxelFacing;
+enum class VoxelFacing2D;
+enum class VoxelType;
 
 class VoxelDefinition
 {
 public:
-	// IDs range from 0 to 63.
-	static const int TOTAL_IDS;
+	// @todo: to be more data-driven, all structs here could be changed to lists of rectangles with texture asset references.
+	// - think of each struct as implicitly defining a set of rectangles that are calculated elsewhere (which is bad/hardcoded!).
 
-	// Regular wall with Y size equal to ceiling height. Y offset is 0, and Y size
-	// can be inferred by the renderer.
+	// Regular wall with height equal to ceiling height.
 	struct WallData
 	{
-		enum class Type { Solid, LevelUp, LevelDown, Menu };
+		TextureAssetReference sideTextureAssetRef, floorTextureAssetRef, ceilingTextureAssetRef;
 
-		// Maps one or more *MENU IDs to a type of menu voxel, for city and wilderness menus.
-		// Cities and the wilderness interpret the ID differently.
-		enum class MenuType
-		{
-			None,
-			CityGates,
-			Crypt, // WCRYPT
-			Dungeon, // DUNGEON
-			Equipment, // EQUIP
-			House, // BS
-			MagesGuild, // MAGE
-			Noble, // NOBLE
-			Palace, // PALACE
-			Tavern, // TAVERN
-			Temple, // TEMPLE
-			Tower // TOWER
-		};
-
-		int sideID, floorID, ceilingID, menuID;
-		Type type;
-
-		// Returns whether the wall data is for a *MENU block.
-		bool isMenu() const;
-
-		// Gets exterior menu type from *MENU ID and city boolean, or "none" if no mapping exists.
-		static MenuType getMenuType(int menuID, bool isCity);
-
-		// Returns whether the menu type is for an interior (equipment, tavern, etc.) or something
-		// else (like city gates).
-		static bool menuLeadsToInterior(MenuType menuType);
-
-		// Returns whether the menu type displays text on-screen when the player right clicks it.
-		static bool menuHasDisplayName(MenuType menuType);
+		void init(TextureAssetReference &&sideTextureAssetRef, TextureAssetReference &&floorTextureAssetRef,
+			TextureAssetReference &&ceilingTextureAssetRef);
 	};
 
 	// Floors only have their top rendered.
 	struct FloorData
 	{
-		int id;
+		TextureAssetReference textureAssetRef;
+
+		// Wild automap floor coloring to make roads, etc. easier to see.
+		bool isWildWallColored;
+
+		void init(TextureAssetReference &&textureAssetRef, bool isWildWallColored);
 	};
 
 	// Ceilings only have their bottom rendered.
 	struct CeilingData
 	{
-		int id;
+		TextureAssetReference textureAssetRef;
+
+		void init(TextureAssetReference &&textureAssetRef);
 	};
 
-	// Raised platform.
+	// Raised platform at some Y offset in the voxel.
 	struct RaisedData
 	{
-		int sideID, floorID, ceilingID;
+		TextureAssetReference sideTextureAssetRef, floorTextureAssetRef, ceilingTextureAssetRef;
 		double yOffset, ySize, vTop, vBottom;
+
+		void init(TextureAssetReference &&sideTextureAssetRef, TextureAssetReference &&floorTextureAssetRef,
+			TextureAssetReference &&ceilingTextureAssetRef, double yOffset, double ySize, double vTop,
+			double vBottom);
 	};
 
-	// Diagonal. The type determines the start and end corners.
+	// Diagonal wall with variable start and end corners.
 	struct DiagonalData
 	{
-		int id;
+		TextureAssetReference textureAssetRef;
 		bool type1; // Type 1 is '/', (nearX, nearZ) -> (farX, farZ).
+
+		void init(TextureAssetReference &&textureAssetRef, bool type1);
 	};
 
 	// Transparent walls only shows front-facing textures (wooden arches, hedges, etc.).
-	// Nothing is drawn when the player is in the same voxel column.
+	// Nothing is drawn when the player is in the same voxel.
 	struct TransparentWallData
 	{
-		int id;
+		TextureAssetReference textureAssetRef;
 		bool collider; // Also affects automap visibility.
+
+		void init(TextureAssetReference &&textureAssetRef, bool collider);
 	};
 
-	// Rendered on one edge of a voxel with height equal to ceiling height.
-	// The facing determines which side the edge is on.
+	// Rendered on one edge of a voxel with height equal to ceiling height. The facing determines
+	// which side the edge is on.
 	struct EdgeData
 	{
-		int id;
+		TextureAssetReference textureAssetRef;
 		double yOffset;
 		bool collider;
 
@@ -105,87 +87,68 @@ public:
 		// i.e., both palace graphics and store signs.
 		bool flipped;
 
-		VoxelFacing facing;
+		VoxelFacing2D facing;
+
+		void init(TextureAssetReference &&textureAssetRef, double yOffset, bool collider, bool flipped,
+			VoxelFacing2D facing);
 	};
 
-	// Chasms have zero to four visible faces depending on adjacent floors. Each face is 
-	// front-facing and back-facing.
+	// Chasms have zero to four wall faces (stored with voxel instance) depending on adjacent floors.
+	// Each face is front-facing and back-facing.
 	struct ChasmData
 	{
-		enum class Type { Dry, Wet, Lava };
+		TextureAssetReference textureAssetRef;
+		ArenaTypes::ChasmType type;
 
-		// The sizes of wet chasms and lava chasms are unaffected by ceiling height.
-		static const double WET_LAVA_DEPTH;
-
-		int id;
-		bool north, east, south, west;
-		Type type;
+		void init(TextureAssetReference &&textureAssetRef, ArenaTypes::ChasmType type);
 
 		bool matches(const ChasmData &other) const;
-		bool faceIsVisible(VoxelFacing facing) const;
-		
-		// Includes chasm floor.
-		int getFaceCount() const;
 	};
 
 	struct DoorData
 	{
-		// Each type of door. Most doors swing open, while others raise up or slide to the side.
-		// Splitting doors are unused in the original game.
-		enum class Type { Swinging, Sliding, Raising, Splitting };
+		TextureAssetReference textureAssetRef;
+		ArenaTypes::DoorType type;
 
-		// Each door has a certain behavior for playing sounds when closing.
-		enum class CloseSoundType { OnClosed, OnClosing };
-
-		struct CloseSoundData
-		{
-			int soundIndex;
-			CloseSoundType type;
-		};
-
-		int id;
-		Type type;
-
-		// Gets the door's open sound index.
-		int getOpenSoundIndex() const;
-
-		// Gets the door's close sound data.
-		CloseSoundData getCloseSoundData() const;
+		void init(TextureAssetReference &&textureAssetRef, ArenaTypes::DoorType type);
 	};
 
-	VoxelDataType dataType; // Defines how the voxel is interpreted and rendered.
+	// Determines how the voxel definition is accessed.
+	ArenaTypes::VoxelType type;
 
-	// Only one voxel data type can be active at a time, given by "dataType".
-	union
-	{
-		WallData wall;
-		FloorData floor;
-		CeilingData ceiling;
-		RaisedData raised;
-		DiagonalData diagonal;
-		TransparentWallData transparentWall;
-		EdgeData edge;
-		ChasmData chasm;
-		DoorData door;
-	};
+	// Only one voxel type can be active at a time, given by "type". No longer a union due to the
+	// added complexity of texture asset references.
+	WallData wall;
+	FloorData floor;
+	CeilingData ceiling;
+	RaisedData raised;
+	DiagonalData diagonal;
+	TransparentWallData transparentWall;
+	EdgeData edge;
+	ChasmData chasm;
+	DoorData door;
 
 	VoxelDefinition();
 
-	static VoxelDefinition makeWall(int sideID, int floorID, int ceilingID, const int *menuID,
-		WallData::Type type);
-	static VoxelDefinition makeFloor(int id);
-	static VoxelDefinition makeCeiling(int id);
-	static VoxelDefinition makeRaised(int sideID, int floorID, int ceilingID, double yOffset,
-		double ySize, double vTop, double vBottom);
-	static VoxelDefinition makeDiagonal(int id, bool type1);
-	static VoxelDefinition makeTransparentWall(int id, bool collider);
-	static VoxelDefinition makeEdge(int id, double yOffset, bool collider, bool flipped, VoxelFacing facing);
-	static VoxelDefinition makeChasm(int id, bool north, bool east, bool south, bool west,
-		ChasmData::Type type);
-	static VoxelDefinition makeDoor(int id, DoorData::Type type);
+	static VoxelDefinition makeWall(TextureAssetReference &&sideTextureAssetRef,
+		TextureAssetReference &&floorTextureAssetRef, TextureAssetReference &&ceilingTextureAssetRef);
+	static VoxelDefinition makeFloor(TextureAssetReference &&textureAssetRef, bool isWildWallColored);
+	static VoxelDefinition makeCeiling(TextureAssetReference &&textureAssetRef);
+	static VoxelDefinition makeRaised(TextureAssetReference &&sideTextureAssetRef,
+		TextureAssetReference &&floorTextureAssetRef, TextureAssetReference &&ceilingTextureAssetRef,
+		double yOffset, double ySize, double vTop, double vBottom);
+	static VoxelDefinition makeDiagonal(TextureAssetReference &&textureAssetRef, bool type1);
+	static VoxelDefinition makeTransparentWall(TextureAssetReference &&textureAssetRef, bool collider);
+	static VoxelDefinition makeEdge(TextureAssetReference &&textureAssetRef, double yOffset, bool collider,
+		bool flipped, VoxelFacing2D facing);
+	static VoxelDefinition makeChasm(TextureAssetReference &&textureAssetRef, ArenaTypes::ChasmType type);
+	static VoxelDefinition makeDoor(TextureAssetReference &&textureAssetRef, ArenaTypes::DoorType type);
 
-	// Gets the normal associated with a voxel facing.
-	static Double3 getNormal(VoxelFacing facing);
+	// Whether this voxel definition contributes to a chasm having a wall face.
+	bool allowsChasmFace() const;
+
+	// Gets all the texture asset references from the voxel definition based on its type.
+	Buffer<TextureAssetReference> getTextureAssetReferences() const;
 };
 
 #endif

@@ -7,28 +7,24 @@
 #include "RichTextString.h"
 #include "TextAlignment.h"
 #include "TextSubPanel.h"
+#include "Texture.h"
+#include "../Assets/ArenaPaletteName.h"
 #include "../Assets/ArenaSave.h"
+#include "../Assets/ArenaTextureName.h"
 #include "../Game/Game.h"
 #include "../Game/Options.h"
 #include "../Math/Vector2.h"
 #include "../Media/Color.h"
-#include "../Media/FontManager.h"
+#include "../Media/FontLibrary.h"
 #include "../Media/FontName.h"
-#include "../Media/MusicName.h"
-#include "../Media/PaletteFile.h"
-#include "../Media/PaletteName.h"
-#include "../Media/TextureFile.h"
 #include "../Media/TextureManager.h"
-#include "../Media/TextureName.h"
+#include "../Rendering/ArenaRenderUtils.h"
 #include "../Rendering/Renderer.h"
-#include "../Rendering/Texture.h"
 #include "../Utilities/Platform.h"
 
 #include "components/debug/Debug.h"
 #include "components/utilities/File.h"
 #include "components/utilities/String.h"
-
-const int LoadSavePanel::SlotCount = 10;
 
 LoadSavePanel::LoadSavePanel(Game &game, LoadSavePanel::Type type)
 	: Panel(game)
@@ -50,17 +46,18 @@ LoadSavePanel::LoadSavePanel(Game &game, LoadSavePanel::Type type)
 		{
 			const auto &entry = names->entries.at(i);
 
-			const Int2 center(Renderer::ORIGINAL_WIDTH / 2, 8 + (i * 14));
+			const Int2 center(ArenaRenderUtils::SCREEN_WIDTH / 2, 8 + (i * 14));
+			const auto &fontLibrary = game.getFontLibrary();
 			const RichTextString richText(
 				std::string(entry.name.data()),
 				FontName::Arena,
 				Color::White,
 				TextAlignment::Center,
-				game.getFontManager());
+				fontLibrary);
 
 			// Create text box from entry text.
 			this->saveTextBoxes.at(i) = std::make_unique<TextBox>(
-				center, richText, game.getRenderer());
+				center, richText, fontLibrary, game.getRenderer());
 		}
 	}
 	else
@@ -74,8 +71,8 @@ LoadSavePanel::LoadSavePanel(Game &game, LoadSavePanel::Type type)
 		{
 			// Temp: draw not implemented pop-up.
 			const Int2 center(
-				Renderer::ORIGINAL_WIDTH / 2,
-				Renderer::ORIGINAL_HEIGHT / 2);
+				ArenaRenderUtils::SCREEN_WIDTH / 2,
+				ArenaRenderUtils::SCREEN_HEIGHT / 2);
 			
 			const int lineSpacing = 1;
 			const RichTextString richText(
@@ -84,14 +81,14 @@ LoadSavePanel::LoadSavePanel(Game &game, LoadSavePanel::Type type)
 				Color(150, 97, 0),
 				TextAlignment::Center,
 				lineSpacing,
-				game.getFontManager());
+				game.getFontLibrary());
 
 			auto popUpFunction = [](Game &game)
 			{
 				game.popSubPanel();
 			};
 
-			Texture texture = Texture::generate(Texture::PatternType::Dark,
+			Texture texture = TextureUtils::generate(TextureUtils::PatternType::Dark,
 				richText.getDimensions().x + 10, richText.getDimensions().y + 10,
 				game.getTextureManager(), game.getRenderer());
 
@@ -147,15 +144,9 @@ int LoadSavePanel::getClickedIndex(const Int2 &point)
 	return -1;
 }
 
-Panel::CursorData LoadSavePanel::getCurrentCursor() const
+std::optional<Panel::CursorData> LoadSavePanel::getCurrentCursor() const
 {
-	auto &game = this->getGame();
-	auto &renderer = game.getRenderer();
-	auto &textureManager = game.getTextureManager();
-	const auto &texture = textureManager.getTexture(
-		TextureFile::fromName(TextureName::SwordCursor),
-		PaletteFile::fromName(PaletteName::Default), renderer);
-	return CursorData(&texture, CursorAlignment::TopLeft);
+	return this->getDefaultCursor();
 }
 
 void LoadSavePanel::handleEvent(const SDL_Event &e)
@@ -189,14 +180,26 @@ void LoadSavePanel::render(Renderer &renderer)
 	// Clear full screen.
 	renderer.clear();
 
-	// Set palette.
-	auto &textureManager = this->getGame().getTextureManager();
-	textureManager.setPalette(PaletteFile::fromName(PaletteName::Default));
-
 	// Draw slots background.
-	const auto &slotsBackground = textureManager.getTexture(
-		TextureFile::fromName(TextureName::LoadSave), renderer);
-	renderer.drawOriginal(slotsBackground);
+	auto &textureManager = this->getGame().getTextureManager();
+	const std::string &paletteFilename = ArenaPaletteName::Default;
+	const std::optional<PaletteID> paletteID = textureManager.tryGetPaletteID(paletteFilename.c_str());
+	if (!paletteID.has_value())
+	{
+		DebugLogError("Couldn't get palette ID for \"" + paletteFilename + "\".");
+		return;
+	}
+
+	const std::string &textureFilename = ArenaTextureName::LoadSave;
+	const std::optional<TextureBuilderID> textureBuilderID =
+		textureManager.tryGetTextureBuilderID(textureFilename.c_str());
+	if (!textureBuilderID.has_value())
+	{
+		DebugLogError("Couldn't get texture builder ID for \"" + textureFilename + "\".");
+		return;
+	}
+
+	renderer.drawOriginal(*textureBuilderID, *paletteID, textureManager);
 
 	// Draw save text.
 	for (const auto &textBox : this->saveTextBoxes)
@@ -204,8 +207,7 @@ void LoadSavePanel::render(Renderer &renderer)
 		if (textBox.get() != nullptr)
 		{
 			const Rect textBoxRect = textBox->getRect();
-			renderer.drawOriginal(textBox->getTexture(),
-				textBoxRect.getLeft(), textBoxRect.getTop());
+			renderer.drawOriginal(textBox->getTexture(), textBoxRect.getLeft(), textBoxRect.getTop());
 		}
 	}
 }

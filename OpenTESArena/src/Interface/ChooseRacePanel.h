@@ -5,40 +5,32 @@
 
 #include "Button.h"
 #include "Panel.h"
-#include "../Entities/CharacterClass.h"
+#include "Texture.h"
 #include "../Math/Vector2.h"
-#include "../Rendering/Texture.h"
 
 class Renderer;
-
-enum class GenderName;
 
 class ChooseRacePanel : public Panel
 {
 private:
 	// The mask ID for no selected province.
-	static const int NO_ID;
+	static constexpr int NO_ID = -1;
 
-	Button<Game&, const CharacterClass&, const std::string&> backToGenderButton;
-	Button<Game&, const CharacterClass&, const std::string&, GenderName, int> acceptButton;
-	CharacterClass charClass;
-	GenderName gender;
-	std::string name;
+	Button<Game&> backToGenderButton;
+	Button<Game&, int> acceptButton;
 
 	// Gets the initial parchment pop-up.
-	static std::unique_ptr<Panel> getInitialSubPanel(Game &game,
-		const CharacterClass &charClass, const std::string &name);
+	static std::unique_ptr<Panel> getInitialSubPanel(Game &game);
 
 	// Gets the mask ID associated with some pixel location, or "no ID" if none found.
 	int getProvinceMaskID(const Int2 &position) const;
 
 	void drawProvinceTooltip(int provinceID, Renderer &renderer);	
 public:
-	ChooseRacePanel(Game &game, const CharacterClass &charClass, 
-		const std::string &name, GenderName gender);
+	ChooseRacePanel(Game &game);
 	virtual ~ChooseRacePanel() = default;
 
-	virtual Panel::CursorData getCurrentCursor() const override;
+	virtual std::optional<Panel::CursorData> getCurrentCursor() const override;
 	virtual void handleEvent(const SDL_Event &e) override;
 	virtual void render(Renderer &renderer) override;
 	virtual void renderSecondary(Renderer &renderer) override;

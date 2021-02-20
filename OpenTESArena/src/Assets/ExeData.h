@@ -8,6 +8,8 @@
 
 #include "ExeTypes.h"
 
+#include "components/utilities/KeyValueFile.h"
+
 // This class stores data from the Arena executable. In other words, it represents a
 // kind of "view" into the executable's data.
 
@@ -138,6 +140,9 @@ public:
 		std::array<uint8_t, 24> creatureBlood; // Indices into effects animation list.
 		std::array<int8_t, 24> creatureDiseaseChances; // Negative values have special meaning.
 		std::array<std::array<uint8_t, 8>, 24> creatureAttributes; // 255 == 100.
+
+		// Display name of the final boss when selecting them.
+		std::string finalBossName;
 
 		// Creature animations (i.e., their .CFA filenames). These are ordered the same
 		// as creature names, and there is an extra entry at the end for the final boss.
@@ -518,15 +523,13 @@ public:
 private:
 	static const std::string CD_VERSION_MAP_FILENAME;
 	static const std::string FLOPPY_VERSION_MAP_FILENAME;
-	static const char PAIR_SEPARATOR;
+	static constexpr char PAIR_SEPARATOR = ',';
 
 	// Gets the offset value from the given section and key.
-	static int get(const std::string &section, const std::string &key,
-		const KeyValueFile &keyValueFile);
+	static int get(const KeyValueFile::Section &section, const std::string &key);
 
 	// Gets the offset + length value from the given section and key.
-	static std::pair<int, int> getPair(const std::string &section, const std::string &key,
-		const KeyValueFile &keyValueFile);
+	static std::pair<int, int> getPair(const KeyValueFile::Section &section, const std::string &key);
 
 	static int8_t readInt8(const char *data);
 	static uint8_t readUint8(const char *data);

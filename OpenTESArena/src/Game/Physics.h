@@ -1,6 +1,7 @@
 #ifndef PHYSICS_H
 #define PHYSICS_H
 
+#include <limits>
 #include <optional>
 #include <unordered_map>
 #include <vector>
@@ -10,6 +11,7 @@
 #include "../Math/Vector3.h"
 #include "../Rendering/Renderer.h"
 #include "../World/VoxelDefinition.h"
+#include "../World/VoxelUtils.h"
 
 // Namespace for physics-related calculations like ray casting.
 
@@ -26,13 +28,14 @@ namespace Physics
 		struct VoxelHit
 		{
 			uint16_t id;
-			Int3 voxel;
-			std::optional<VoxelFacing> facing;
+			CoordInt3 coord;
+			std::optional<VoxelFacing3D> facing;
 		};
 
 		struct EntityHit
 		{
-			int id;
+			EntityID id;
+			EntityType type;
 		};
 	private:
 		double t;
@@ -43,11 +46,11 @@ namespace Physics
 		VoxelHit voxelHit;
 		EntityHit entityHit;
 	public:
-		static const double MAX_T;
+		static constexpr double MAX_T = std::numeric_limits<double>::infinity();
 
-		void initVoxel(double t, const Double3 &point, uint16_t id, const Int3 &voxel,
-			const VoxelFacing *facing);
-		void initEntity(double t, const Double3 &point, int id);
+		void initVoxel(double t, const Double3 &point, uint16_t id, const CoordInt3 &coord,
+			const VoxelFacing3D *facing);
+		void initEntity(double t, const Double3 &point, EntityID id, EntityType type);
 
 		double getT() const;
 		double getTSqr() const;
@@ -63,13 +66,13 @@ namespace Physics
 
 	// Casts a ray through the world and writes any intersection data into the output
 	// parameter. Returns true if the ray hit something.
-	bool rayCast(const Double3 &rayStart, const Double3 &rayDirection, int chunkDistance,
-		double ceilingHeight, const Double3 &cameraForward, bool pixelPerfect, bool includeEntities,
-		const EntityManager &entityManager, const VoxelGrid &voxelGrid, const Renderer &renderer,
-		Physics::Hit &hit);
-	bool rayCast(const Double3 &rayStart, const Double3 &rayDirection, int chunkDistance,
-		const Double3 &cameraForward, bool pixelPerfect, bool includeEntities,
-		const EntityManager &entityManager, const VoxelGrid &voxelGrid, const Renderer &renderer,
+	bool rayCast(const CoordDouble3 &rayStart, const NewDouble3 &rayDirection, int chunkDistance,
+		double ceilingHeight, const NewDouble3 &cameraForward, bool pixelPerfect, const Palette &palette,
+		bool includeEntities, const LevelData &levelData, const EntityDefinitionLibrary &entityDefLibrary,
+		const Renderer &renderer, Physics::Hit &hit);
+	bool rayCast(const CoordDouble3 &rayStart, const NewDouble3 &rayDirection, int chunkDistance,
+		const NewDouble3 &cameraForward, bool pixelPerfect, const Palette &palette, bool includeEntities,
+		const LevelData &levelData, const EntityDefinitionLibrary &entityDefLibrary, const Renderer &renderer,
 		Physics::Hit &hit);
 };
 

@@ -1,5 +1,6 @@
 #include <algorithm>
 #include <cctype>
+#include <cstdio>
 #include <sstream>
 #include <string_view>
 #include <unordered_set>
@@ -99,13 +100,13 @@ namespace
 	};
 }
 
-INFFile::VoxelTextureData::VoxelTextureData(const std::string &filename, int setIndex)
+INFFile::VoxelTextureData::VoxelTextureData(const char *filename, const std::optional<int> &setIndex)
 	: filename(filename), setIndex(setIndex) { }
 
-INFFile::VoxelTextureData::VoxelTextureData(const std::string &filename)
-	: filename(filename), setIndex(std::nullopt) { }
+INFFile::VoxelTextureData::VoxelTextureData(const char *filename)
+	: VoxelTextureData(filename, std::nullopt) { }
 
-INFFile::FlatTextureData::FlatTextureData(const std::string &filename)
+INFFile::FlatTextureData::FlatTextureData(const char *filename)
 	: filename(filename) { }
 
 INFFile::CeilingData::CeilingData()
@@ -166,7 +167,7 @@ bool INFFile::init(const char *filename)
 	if (isEncrypted)
 	{
 		// Adapted from BSATool.
-		const std::array<uint8_t, 8> encryptionKeys =
+		constexpr std::array<uint8_t, 8> encryptionKeys =
 		{
 			0xEA, 0x7B, 0x4E, 0xBD, 0x19, 0xC9, 0x38, 0x99
 		};
@@ -328,7 +329,7 @@ bool INFFile::init(const char *filename)
 			if (tokens.size() == 1)
 			{
 				// A regular filename (like an .IMG).
-				this->voxelTextures.push_back(VoxelTextureData(line));
+				this->voxelTextures.push_back(VoxelTextureData(line.c_str()));
 			}
 			else
 			{
@@ -338,7 +339,7 @@ bool INFFile::init(const char *filename)
 
 				for (int i = 0; i < setSize; i++)
 				{
-					this->voxelTextures.push_back(VoxelTextureData(std::string(textureName), i));
+					this->voxelTextures.push_back(VoxelTextureData(std::string(textureName).c_str(), i));
 				}
 			}
 		}
@@ -358,7 +359,7 @@ bool INFFile::init(const char *filename)
 					floorState->textureName = line;
 
 					this->voxelTextures.push_back(
-						VoxelTextureData(std::string(floorState->textureName)));
+						VoxelTextureData(std::string(floorState->textureName).c_str()));
 					return static_cast<int>(this->voxelTextures.size()) - 1;
 				}
 				else
@@ -370,7 +371,7 @@ bool INFFile::init(const char *filename)
 					for (int i = 0; i < setSize; i++)
 					{
 						this->voxelTextures.push_back(
-							VoxelTextureData(std::string(floorState->textureName), i));
+							VoxelTextureData(std::string(floorState->textureName).c_str(), i));
 					}
 
 					return static_cast<int>(this->voxelTextures.size()) - setSize;
@@ -503,7 +504,7 @@ bool INFFile::init(const char *filename)
 			if (tokens.size() == 1)
 			{
 				// A regular filename (like an .IMG).
-				this->voxelTextures.push_back(VoxelTextureData(line));
+				this->voxelTextures.push_back(VoxelTextureData(line.c_str()));
 			}
 			else
 			{
@@ -513,7 +514,8 @@ bool INFFile::init(const char *filename)
 
 				for (int i = 0; i < setSize; i++)
 				{
-					this->voxelTextures.push_back(VoxelTextureData(std::string(textureName), i));
+					this->voxelTextures.push_back(VoxelTextureData(
+						std::string(textureName).c_str(), i));
 				}
 			}
 		}
@@ -533,7 +535,7 @@ bool INFFile::init(const char *filename)
 					wallState->textureName = line;
 
 					this->voxelTextures.push_back(
-						VoxelTextureData(std::string(wallState->textureName)));
+						VoxelTextureData(std::string(wallState->textureName).c_str()));
 					return static_cast<int>(this->voxelTextures.size()) - 1;
 				}
 				else
@@ -545,7 +547,7 @@ bool INFFile::init(const char *filename)
 					for (int i = 0; i < setSize; i++)
 					{
 						this->voxelTextures.push_back(
-							VoxelTextureData(std::string(wallState->textureName), i));
+							VoxelTextureData(std::string(wallState->textureName).c_str(), i));
 					}
 
 					return static_cast<int>(this->voxelTextures.size()) - setSize;
@@ -672,7 +674,7 @@ bool INFFile::init(const char *filename)
 			}();
 
 			// Add the flat's texture name to the textures vector.
-			this->flatTextures.push_back(FlatTextureData(textureName));
+			this->flatTextures.push_back(FlatTextureData(textureName.c_str()));
 
 			// Add a new flat data record.
 			this->flats.push_back(INFFile::FlatData());
@@ -739,19 +741,18 @@ bool INFFile::init(const char *filename)
 	{
 		// Split into the filename and ID. Make sure the filename is all caps.
 		const std::vector<std::string_view> tokens = StringView::split(line);
-		const std::string vocFilename = String::toUppercase(std::string(tokens.front()));
+		std::string vocFilename = String::toUppercase(std::string(tokens.front()));
 		const int vocID = std::stoi(std::string(tokens.at(1)));
-
-		this->sounds.insert(std::make_pair(vocID, vocFilename));
+		this->sounds.emplace(vocID, std::move(vocFilename));
 	};
 
 	auto parseTextLine = [this, &textState, &flushTextState](const std::string &line)
 	{
 		// Start a new text state after each *TEXT tag.
-		const char TEXT_CHAR = '*';
-		const char KEY_INDEX_CHAR = '+';
-		const char RIDDLE_CHAR = '^';
-		const char DISPLAYED_ONCE_CHAR = '~';
+		constexpr char TEXT_CHAR = '*';
+		constexpr char KEY_INDEX_CHAR = '+';
+		constexpr char RIDDLE_CHAR = '^';
+		constexpr char DISPLAYED_ONCE_CHAR = '~';
 
 		// Check the first character in the line to determine any changes in text mode.
 		// Otherwise, parse the line based on the current mode.
@@ -968,47 +969,48 @@ const std::vector<INFFile::FlatTextureData> &INFFile::getFlatTextures() const
 	return this->flatTextures;
 }
 
-const int *INFFile::getBoxCap(int index) const
+const std::optional<int> &INFFile::getBoxCap(int index) const
 {
 	DebugAssertIndex(this->boxCaps, index);
-	const auto &opt = this->boxCaps[index];
-	return opt.has_value() ? &opt.value() : nullptr;
+	return this->boxCaps[index];
 }
 
-const int *INFFile::getBoxSide(int index) const
+const std::optional<int> &INFFile::getBoxSide(int index) const
 {
 	DebugAssertIndex(this->boxSides, index);
-	const auto &opt = this->boxSides[index];
+	const std::optional<int> &opt = this->boxSides[index];
 
-	// Some null pointers were being returned here, and they appear to be errors within
-	// the Arena data (i.e., the initial level in some noble houses asks for wall texture 
-	// #14, which doesn't exist in NOBLE1.INF), so maybe it should resort to a default 
-	// index instead.
+	// This needs to handle errors in the Arena data (i.e., the initial level in some noble houses
+	// asks for wall texture #14, which doesn't exist in NOBLE1.INF).
 	if (opt.has_value())
 	{
-		return &opt.value();
+		return opt;
 	}
 	else
 	{
 		DebugLogWarning("Invalid *BOXSIDE index \"" + std::to_string(index) + "\".");
 		DebugAssert(this->boxSides.size() > 0);
-		return &this->boxSides[0].value();
+		return this->boxSides[0];
 	}
 }
 
-const int *INFFile::getMenu(int index) const
+const std::optional<int> &INFFile::getMenu(int index) const
 {
 	DebugAssertIndex(this->menus, index);
-	const auto &opt = this->menus[index];
-	return opt.has_value() ? &opt.value() : nullptr;
+	return this->menus[index];
 }
 
-int INFFile::getMenuIndex(int textureID) const
+std::optional<int> INFFile::getMenuIndex(int textureID) const
 {
-	// Returns the index of the texture ID in the menus array, or -1 if not found.
 	const auto iter = std::find(this->menus.begin(), this->menus.end(), textureID);
-	return (iter != this->menus.end()) ? 
-		static_cast<int>(std::distance(this->menus.begin(), iter)) : -1;
+	if (iter != this->menus.end())
+	{
+		return static_cast<int>(std::distance(this->menus.begin(), iter));
+	}
+	else
+	{
+		return std::nullopt;
+	}
 }
 
 const INFFile::FlatData &INFFile::getFlat(int index) const
@@ -1017,7 +1019,7 @@ const INFFile::FlatData &INFFile::getFlat(int index) const
 	return this->flats[index];
 }
 
-const INFFile::FlatData *INFFile::getFlatWithItemIndex(int itemIndex) const
+const INFFile::FlatData *INFFile::getFlatWithItemIndex(ArenaTypes::ItemIndex itemIndex) const
 {
 	const auto iter = std::find_if(this->flats.begin(), this->flats.end(),
 		[itemIndex](const FlatData &flat)
@@ -1028,7 +1030,7 @@ const INFFile::FlatData *INFFile::getFlatWithItemIndex(int itemIndex) const
 	return (iter != this->flats.end()) ? &(*iter) : nullptr;
 }
 
-const std::string &INFFile::getSound(int index) const
+const char *INFFile::getSound(int index) const
 {
 	const auto soundIter = this->sounds.find(index);
 
@@ -1037,12 +1039,12 @@ const std::string &INFFile::getSound(int index) const
 	// some default sound.
 	if (soundIter != this->sounds.end())
 	{
-		return soundIter->second;
+		return soundIter->second.c_str();
 	}
 	else
 	{
 		DebugLogWarning("Invalid sound index \"" + std::to_string(index) + "\".");
-		return this->sounds.at(0);
+		return this->sounds.at(0).c_str();
 	}
 }
 
@@ -1076,34 +1078,34 @@ const INFFile::TextData &INFFile::getText(int index) const
 	return this->texts.at(index);
 }
 
-const std::string &INFFile::getName() const
+const char *INFFile::getName() const
 {
-	return this->name;
+	return this->name.c_str();
 }
 
-const int *INFFile::getDryChasmIndex() const
+const std::optional<int> &INFFile::getDryChasmIndex() const
 {
-	return this->dryChasmIndex.has_value() ? &this->dryChasmIndex.value() : nullptr;
+	return this->dryChasmIndex;
 }
 
-const int *INFFile::getLavaChasmIndex() const
+const std::optional<int> &INFFile::getLavaChasmIndex() const
 {
-	return this->lavaChasmIndex.has_value() ? &this->lavaChasmIndex.value() : nullptr;
+	return this->lavaChasmIndex;
 }
 
-const int *INFFile::getLevelDownIndex() const
+const std::optional<int> &INFFile::getLevelDownIndex() const
 {
-	return this->levelDownIndex.has_value() ? &this->levelDownIndex.value() : nullptr;
+	return this->levelDownIndex;
 }
 
-const int *INFFile::getLevelUpIndex() const
+const std::optional<int> &INFFile::getLevelUpIndex() const
 {
-	return this->levelUpIndex.has_value() ? &this->levelUpIndex.value() : nullptr;
+	return this->levelUpIndex;
 }
 
-const int *INFFile::getWetChasmIndex() const
+const std::optional<int> &INFFile::getWetChasmIndex() const
 {
-	return this->wetChasmIndex.has_value() ? &this->wetChasmIndex.value() : nullptr;
+	return this->wetChasmIndex;
 }
 
 const INFFile::CeilingData &INFFile::getCeiling() const

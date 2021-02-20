@@ -5,126 +5,125 @@
 #include "ChooseRacePanel.h"
 #include "CursorAlignment.h"
 #include "RichTextString.h"
+#include "Surface.h"
 #include "TextAlignment.h"
 #include "TextBox.h"
+#include "../Assets/ArenaTextureName.h"
 #include "../Assets/ExeData.h"
-#include "../Assets/MiscAssets.h"
-#include "../Entities/GenderName.h"
 #include "../Game/Game.h"
 #include "../Game/Options.h"
 #include "../Math/Vector2.h"
 #include "../Media/Color.h"
-#include "../Media/FontManager.h"
+#include "../Media/FontLibrary.h"
 #include "../Media/FontName.h"
-#include "../Media/PaletteFile.h"
-#include "../Media/PaletteName.h"
-#include "../Media/TextureFile.h"
 #include "../Media/TextureManager.h"
-#include "../Media/TextureName.h"
+#include "../Rendering/ArenaRenderUtils.h"
 #include "../Rendering/Renderer.h"
-#include "../Rendering/Surface.h"
 
-ChooseGenderPanel::ChooseGenderPanel(Game &game, const CharacterClass &charClass,
-	const std::string &name)
-	: Panel(game), charClass(charClass), name(name)
+ChooseGenderPanel::ChooseGenderPanel(Game &game)
+	: Panel(game)
 {
-	this->parchment = Texture::generate(Texture::PatternType::Parchment, 180, 40,
+	this->parchment = TextureUtils::generate(TextureUtils::PatternType::Parchment, 180, 40,
 		game.getTextureManager(), game.getRenderer());
 
 	this->genderTextBox = [&game]()
 	{
-		const Int2 center(Renderer::ORIGINAL_WIDTH / 2, 80);
+		const Int2 center(ArenaRenderUtils::SCREEN_WIDTH / 2, 80);
 
-		const auto &exeData = game.getMiscAssets().getExeData();
+		const auto &exeData = game.getBinaryAssetLibrary().getExeData();
 		const std::string &text = exeData.charCreation.chooseGender;
 
+		const auto &fontLibrary = game.getFontLibrary();
 		const RichTextString richText(
 			text,
 			FontName::A,
 			Color(48, 12, 12),
 			TextAlignment::Center,
-			game.getFontManager());
+			fontLibrary);
 
-		return std::make_unique<TextBox>(center, richText, game.getRenderer());
+		return std::make_unique<TextBox>(center, richText, fontLibrary, game.getRenderer());
 	}();
 
 	this->maleTextBox = [&game]()
 	{
-		const Int2 center(Renderer::ORIGINAL_WIDTH / 2, 120);
+		const Int2 center(ArenaRenderUtils::SCREEN_WIDTH / 2, 120);
 
-		const auto &exeData = game.getMiscAssets().getExeData();
+		const auto &exeData = game.getBinaryAssetLibrary().getExeData();
 		const std::string &text = exeData.charCreation.chooseGenderMale;
 
+		const auto &fontLibrary = game.getFontLibrary();
 		const RichTextString richText(
 			text,
 			FontName::A,
 			Color(48, 12, 12),
 			TextAlignment::Center,
-			game.getFontManager());
+			fontLibrary);
 
-		return std::make_unique<TextBox>(center, richText, game.getRenderer());
+		return std::make_unique<TextBox>(center, richText, fontLibrary, game.getRenderer());
 	}();
 
 	this->femaleTextBox = [&game]()
 	{
-		const Int2 center(Renderer::ORIGINAL_WIDTH / 2, 160);
+		const Int2 center(ArenaRenderUtils::SCREEN_WIDTH / 2, 160);
 
-		const auto &exeData = game.getMiscAssets().getExeData();
+		const auto &exeData = game.getBinaryAssetLibrary().getExeData();
 		const std::string &text = exeData.charCreation.chooseGenderFemale;
 
+		const auto &fontLibrary = game.getFontLibrary();
 		const RichTextString richText(
 			text,
 			FontName::A,
 			Color(48, 12, 12),
 			TextAlignment::Center,
-			game.getFontManager());
+			fontLibrary);
 
-		return std::make_unique<TextBox>(center, richText, game.getRenderer());
+		return std::make_unique<TextBox>(center, richText, fontLibrary, game.getRenderer());
 	}();
 
 	this->backToNameButton = []()
 	{
-		auto function = [](Game &game, const CharacterClass &charClass)
+		auto function = [](Game &game)
 		{
-			game.setPanel<ChooseNamePanel>(game, charClass);
+			game.setPanel<ChooseNamePanel>(game);
 		};
-		return Button<Game&, const CharacterClass&>(function);
+
+		return Button<Game&>(function);
 	}();
 
 	this->maleButton = []()
 	{
-		const Int2 center(Renderer::ORIGINAL_WIDTH / 2, 120);
-		auto function = [](Game &game, const CharacterClass &charClass,
-			const std::string &name)
+		const Int2 center(ArenaRenderUtils::SCREEN_WIDTH / 2, 120);
+		auto function = [](Game &game)
 		{
-			game.setPanel<ChooseRacePanel>(game, charClass, name, GenderName::Male);
+			const bool male = true;
+			auto &charCreationState = game.getCharacterCreationState();
+			charCreationState.setGender(male);
+
+			game.setPanel<ChooseRacePanel>(game);
 		};
-		return Button<Game&, const CharacterClass&, 
-			const std::string&>(center, 175, 35, function);
+
+		return Button<Game&>(center, 175, 35, function);
 	}();
 
 	this->femaleButton = []()
 	{
-		const Int2 center(Renderer::ORIGINAL_WIDTH / 2, 160);
-		auto function = [](Game &game, const CharacterClass &charClass,
-			const std::string &name)
+		const Int2 center(ArenaRenderUtils::SCREEN_WIDTH / 2, 160);
+		auto function = [](Game &game)
 		{
-			game.setPanel<ChooseRacePanel>(game, charClass, name, GenderName::Female);
+			const bool male = false;
+			auto &charCreationState = game.getCharacterCreationState();
+			charCreationState.setGender(male);
+
+			game.setPanel<ChooseRacePanel>(game);
 		};
-		return Button<Game&, const CharacterClass&, 
-			const std::string&>(center, 175, 35, function);
+
+		return Button<Game&>(center, 175, 35, function);
 	}();
 }
 
-Panel::CursorData ChooseGenderPanel::getCurrentCursor() const
+std::optional<Panel::CursorData> ChooseGenderPanel::getCurrentCursor() const
 {
-	auto &game = this->getGame();
-	auto &renderer = game.getRenderer();
-	auto &textureManager = game.getTextureManager();
-	const auto &texture = textureManager.getTexture(
-		TextureFile::fromName(TextureName::SwordCursor),
-		PaletteFile::fromName(PaletteName::Default), renderer);
-	return CursorData(&texture, CursorAlignment::TopLeft);
+	return this->getDefaultCursor();
 }
 
 void ChooseGenderPanel::handleEvent(const SDL_Event &e)
@@ -134,7 +133,7 @@ void ChooseGenderPanel::handleEvent(const SDL_Event &e)
 
 	if (escapePressed)
 	{
-		this->backToNameButton.click(this->getGame(), this->charClass);
+		this->backToNameButton.click(this->getGame());
 	}
 
 	bool leftClick = inputManager.mouseButtonPressed(e, SDL_BUTTON_LEFT);
@@ -147,11 +146,11 @@ void ChooseGenderPanel::handleEvent(const SDL_Event &e)
 
 		if (this->maleButton.contains(mouseOriginalPoint))
 		{
-			this->maleButton.click(this->getGame(), this->charClass, this->name);
+			this->maleButton.click(this->getGame());
 		}
 		else if (this->femaleButton.contains(mouseOriginalPoint))
 		{
-			this->femaleButton.click(this->getGame(), this->charClass, this->name);
+			this->femaleButton.click(this->getGame());
 		}
 	}
 }
@@ -161,21 +160,29 @@ void ChooseGenderPanel::render(Renderer &renderer)
 	// Clear full screen.
 	renderer.clear();
 
-	// Set palette.
-	auto &textureManager = this->getGame().getTextureManager();
-	textureManager.setPalette(PaletteFile::fromName(PaletteName::Default));
-
 	// Draw background.
-	const auto &background = textureManager.getTexture(
-		TextureFile::fromName(TextureName::CharacterCreation),
-		PaletteFile::fromName(PaletteName::BuiltIn), renderer);
-	renderer.drawOriginal(background);
+	auto &textureManager = this->getGame().getTextureManager();
+	const std::string &backgroundFilename = ArenaTextureName::CharacterCreation;
+	const std::optional<PaletteID> backgroundPaletteID = textureManager.tryGetPaletteID(backgroundFilename.c_str());
+	if (!backgroundPaletteID.has_value())
+	{
+		DebugLogError("Couldn't get background palette ID for \"" + backgroundFilename + "\".");
+		return;
+	}
+
+	const std::optional<TextureBuilderID> backgroundTextureBuilderID =
+		textureManager.tryGetTextureBuilderID(backgroundFilename.c_str());
+	if (!backgroundTextureBuilderID.has_value())
+	{
+		DebugLogError("Couldn't get background texture builder ID for \"" + backgroundFilename + "\".");
+		return;
+	}
+
+	renderer.drawOriginal(*backgroundTextureBuilderID, *backgroundPaletteID, textureManager);
 
 	// Draw parchments: title, male, and female.
-	const int parchmentX = (Renderer::ORIGINAL_WIDTH / 2) -
-		(this->parchment.getWidth() / 2);
-	const int parchmentY = (Renderer::ORIGINAL_HEIGHT / 2) -
-		(this->parchment.getHeight() / 2);
+	const int parchmentX = (ArenaRenderUtils::SCREEN_WIDTH / 2) - (this->parchment.getWidth() / 2);
+	const int parchmentY = (ArenaRenderUtils::SCREEN_HEIGHT / 2) - (this->parchment.getHeight() / 2);
 	renderer.drawOriginal(this->parchment, parchmentX, parchmentY - 20);
 	renderer.drawOriginal(this->parchment, parchmentX, parchmentY + 20);
 	renderer.drawOriginal(this->parchment, parchmentX, parchmentY + 60);

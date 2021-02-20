@@ -6,21 +6,18 @@
 #include "RichTextString.h"
 #include "TextAlignment.h"
 #include "TextBox.h"
+#include "Texture.h"
+#include "../Assets/ArenaTextureName.h"
 #include "../Assets/ExeData.h"
-#include "../Assets/MiscAssets.h"
 #include "../Game/Game.h"
 #include "../Game/Options.h"
 #include "../Math/Vector2.h"
 #include "../Media/Color.h"
-#include "../Media/FontManager.h"
+#include "../Media/FontLibrary.h"
 #include "../Media/FontName.h"
-#include "../Media/PaletteFile.h"
-#include "../Media/PaletteName.h"
-#include "../Media/TextureFile.h"
 #include "../Media/TextureManager.h"
-#include "../Media/TextureName.h"
+#include "../Rendering/ArenaRenderUtils.h"
 #include "../Rendering/Renderer.h"
-#include "../Rendering/Texture.h"
 
 LogbookPanel::LogbookPanel(Game &game)
 	: Panel(game)
@@ -28,27 +25,28 @@ LogbookPanel::LogbookPanel(Game &game)
 	this->titleTextBox = [&game]()
 	{
 		const Int2 center(
-			Renderer::ORIGINAL_WIDTH / 2,
-			Renderer::ORIGINAL_HEIGHT / 2);
+			ArenaRenderUtils::SCREEN_WIDTH / 2,
+			ArenaRenderUtils::SCREEN_HEIGHT / 2);
 
-		const auto &exeData = game.getMiscAssets().getExeData();
+		const auto &exeData = game.getBinaryAssetLibrary().getExeData();
 		const std::string &text = exeData.logbook.isEmpty;
 
+		const auto &fontLibrary = game.getFontLibrary();
 		const RichTextString richText(
 			text,
 			FontName::A,
 			Color(255, 207, 12),
 			TextAlignment::Center,
-			game.getFontManager());
+			fontLibrary);
 
-		return std::make_unique<TextBox>(center, richText, game.getRenderer());
+		return std::make_unique<TextBox>(center, richText, fontLibrary, game.getRenderer());
 	}();
 
 	this->backButton = []()
 	{
 		const Int2 center(
-			Renderer::ORIGINAL_WIDTH - 40,
-			Renderer::ORIGINAL_HEIGHT - 13);
+			ArenaRenderUtils::SCREEN_WIDTH - 40,
+			ArenaRenderUtils::SCREEN_HEIGHT - 13);
 
 		auto function = [](Game &game)
 		{
@@ -58,15 +56,9 @@ LogbookPanel::LogbookPanel(Game &game)
 	}();
 }
 
-Panel::CursorData LogbookPanel::getCurrentCursor() const
+std::optional<Panel::CursorData> LogbookPanel::getCurrentCursor() const
 {
-	auto &game = this->getGame();
-	auto &renderer = game.getRenderer();
-	auto &textureManager = game.getTextureManager();
-	const auto &texture = textureManager.getTexture(
-		TextureFile::fromName(TextureName::SwordCursor),
-		PaletteFile::fromName(PaletteName::Default), renderer);
-	return CursorData(&texture, CursorAlignment::TopLeft);
+	return this->getDefaultCursor();
 }
 
 void LogbookPanel::handleEvent(const SDL_Event &e)
@@ -100,17 +92,27 @@ void LogbookPanel::render(Renderer &renderer)
 	// Clear full screen.
 	renderer.clear();
 
-	// Set palette.
+	// Logbook background.
 	auto &textureManager = this->getGame().getTextureManager();
-	textureManager.setPalette(PaletteFile::fromName(PaletteName::Default));
+	const std::string &backgroundTextureName = ArenaTextureName::Logbook;
+	const std::string &backgroundPaletteName = backgroundTextureName;
+	const std::optional<PaletteID> backgroundPaletteID = textureManager.tryGetPaletteID(backgroundPaletteName.c_str());
+	if (!backgroundPaletteID.has_value())
+	{
+		DebugLogError("Couldn't get palette ID for \"" + backgroundPaletteName + "\".");
+		return;
+	}
 
-	// Draw logbook background.
-	const auto &logbookBackground = textureManager.getTexture(
-		TextureFile::fromName(TextureName::Logbook),
-		PaletteFile::fromName(PaletteName::BuiltIn), renderer);
-	renderer.drawOriginal(logbookBackground);
+	const std::optional<TextureBuilderID> backgroundTextureBuilderID =
+		textureManager.tryGetTextureBuilderID(backgroundTextureName.c_str());
+	if (!backgroundTextureBuilderID.has_value())
+	{
+		DebugLogError("Couldn't get texture builder ID for \"" + backgroundTextureName + "\".");
+		return;
+	}
+
+	renderer.drawOriginal(*backgroundTextureBuilderID, *backgroundPaletteID, textureManager);
 
 	// Draw text: title.
-	renderer.drawOriginal(this->titleTextBox->getTexture(),
-		this->titleTextBox->getX(), this->titleTextBox->getY());
+	renderer.drawOriginal(this->titleTextBox->getTexture(), this->titleTextBox->getX(), this->titleTextBox->getY());
 }

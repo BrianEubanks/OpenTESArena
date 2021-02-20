@@ -6,7 +6,6 @@
 
 #include "Button.h"
 #include "Panel.h"
-#include "../Entities/CharacterClass.h"
 #include "../Math/Vector2.h"
 
 // This panel is for choosing character creation attributes and the portrait.
@@ -19,8 +18,6 @@
 class Renderer;
 class TextBox;
 
-enum class GenderName;
-
 class ChooseAttributesPanel : public Panel
 {
 private:
@@ -28,18 +25,12 @@ private:
 	Button<Game&> backToRaceButton, doneButton;
 	Button<ChooseAttributesPanel&, bool> portraitButton;
 	std::vector<Int2> headOffsets;
-	CharacterClass charClass;
-	GenderName gender;
-	int raceID;
-	std::string name;
-	int portraitID;
 	bool canChangePortrait;
 public:
-	ChooseAttributesPanel(Game &game, const CharacterClass &charClass, 
-		const std::string &name, GenderName gender, int raceID);
+	ChooseAttributesPanel(Game &game);
 	virtual ~ChooseAttributesPanel() = default;
 
-	virtual Panel::CursorData getCurrentCursor() const override;
+	virtual std::optional<Panel::CursorData> getCurrentCursor() const override;
 	virtual void handleEvent(const SDL_Event &e) override;
 	virtual void render(Renderer &renderer) override;
 };

@@ -5,8 +5,7 @@
 
 #include "Button.h"
 #include "Panel.h"
-#include "../Entities/CharacterClass.h"
-#include "../Rendering/Texture.h"
+#include "Texture.h"
 
 class Renderer;
 class TextBox;
@@ -16,16 +15,13 @@ class ChooseGenderPanel : public Panel
 private:
 	Texture parchment;
 	std::unique_ptr<TextBox> genderTextBox, maleTextBox, femaleTextBox;
-	Button<Game&, const CharacterClass&> backToNameButton;
-	Button<Game&, const CharacterClass&, const std::string&> maleButton, femaleButton;
-	CharacterClass charClass;
-	std::string name;
+	Button<Game&> backToNameButton;
+	Button<Game&> maleButton, femaleButton;
 public:
-	ChooseGenderPanel(Game &game, const CharacterClass &charClass,
-		const std::string &name);
+	ChooseGenderPanel(Game &game);
 	virtual ~ChooseGenderPanel() = default;
 
-	virtual Panel::CursorData getCurrentCursor() const override;
+	virtual std::optional<Panel::CursorData> getCurrentCursor() const override;
 	virtual void handleEvent(const SDL_Event &e) override;
 	virtual void render(Renderer &renderer) override;
 };

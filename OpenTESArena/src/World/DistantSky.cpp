@@ -3,22 +3,20 @@
 
 #include "ClimateType.h"
 #include "DistantSky.h"
-#include "Location.h"
 #include "LocationDefinition.h"
 #include "LocationUtils.h"
 #include "ProvinceDefinition.h"
 #include "WeatherType.h"
+#include "../Assets/ArenaPaletteName.h"
 #include "../Assets/CityDataFile.h"
 #include "../Assets/COLFile.h"
 #include "../Assets/ExeData.h"
+#include "../Interface/Surface.h"
 #include "../Math/Constants.h"
 #include "../Math/MathUtils.h"
 #include "../Math/Matrix4.h"
 #include "../Math/Random.h"
-#include "../Media/PaletteFile.h"
-#include "../Media/PaletteName.h"
 #include "../Media/TextureManager.h"
-#include "../Rendering/Surface.h"
 
 #include "components/debug/Debug.h"
 #include "components/utilities/String.h"
@@ -51,10 +49,10 @@ namespace
 	};
 }
 
-DistantSky::LandObject::LandObject(int entryIndex, double angleRadians)
+DistantSky::LandObject::LandObject(int entryIndex, Radians angle)
 {
 	this->entryIndex = entryIndex;
-	this->angleRadians = angleRadians;
+	this->angle = angle;
 }
 
 int DistantSky::LandObject::getTextureEntryIndex() const
@@ -62,81 +60,47 @@ int DistantSky::LandObject::getTextureEntryIndex() const
 	return this->entryIndex;
 }
 
-double DistantSky::LandObject::getAngleRadians() const
+double DistantSky::LandObject::getAngle() const
 {
-	return this->angleRadians;
+	return this->angle;
 }
 
-DistantSky::AnimatedLandObject::AnimatedLandObject(int setEntryIndex,
-	double angleRadians, double frameTime)
+DistantSky::AnimatedLandObject::AnimatedLandObject(int setEntryIndex, Radians angle)
 {
-	// Frame time must be positive.
-	DebugAssert(frameTime > 0.0);
-
 	this->setEntryIndex = setEntryIndex;
-	this->angleRadians = angleRadians;
-	this->targetFrameTime = frameTime;
-	this->currentFrameTime = 0.0;
-	this->index = 0;
+	this->angle = angle;
+	this->targetSeconds = AnimatedLandObject::DEFAULT_ANIM_SECONDS;
+	this->currentSeconds = 0.0;
 }
-
-DistantSky::AnimatedLandObject::AnimatedLandObject(int textureSetIndex, double angleRadians)
-	: AnimatedLandObject(textureSetIndex, angleRadians, AnimatedLandObject::DEFAULT_FRAME_TIME) { }
 
 int DistantSky::AnimatedLandObject::getTextureSetEntryIndex() const
 {
 	return this->setEntryIndex;
 }
 
-double DistantSky::AnimatedLandObject::getAngleRadians() const
+double DistantSky::AnimatedLandObject::getAngle() const
 {
-	return this->angleRadians;
+	return this->angle;
 }
 
-double DistantSky::AnimatedLandObject::getFrameTime() const
+double DistantSky::AnimatedLandObject::getAnimPercent() const
 {
-	return this->targetFrameTime;
+	return std::clamp(this->currentSeconds / this->targetSeconds, 0.0, 1.0);
 }
 
-int DistantSky::AnimatedLandObject::getIndex() const
+void DistantSky::AnimatedLandObject::update(double dt)
 {
-	return this->index;
-}
-
-void DistantSky::AnimatedLandObject::setFrameTime(double frameTime)
-{
-	// Frame time must be positive.
-	DebugAssert(frameTime > 0.0);
-
-	this->targetFrameTime = frameTime;
-}
-
-void DistantSky::AnimatedLandObject::setIndex(int index)
-{
-	this->index = index;
-}
-
-void DistantSky::AnimatedLandObject::update(double dt, const DistantSky &distantSky)
-{
-	// Must have at least one image.
-	const int textureCount = distantSky.getTextureSetCount(this->setEntryIndex);
-	if (textureCount > 0)
+	this->currentSeconds += dt;
+	while (this->currentSeconds >= this->targetSeconds)
 	{
-		// Animate based on delta time.
-		this->currentFrameTime += dt;
-
-		while (this->currentFrameTime >= this->targetFrameTime)
-		{
-			this->currentFrameTime -= this->targetFrameTime;
-			this->index = (this->index < (textureCount - 1)) ? (this->index + 1) : 0;
-		}
+		this->currentSeconds -= this->targetSeconds;
 	}
 }
 
-DistantSky::AirObject::AirObject(int entryIndex, double angleRadians, double height)
+DistantSky::AirObject::AirObject(int entryIndex, Radians angle, double height)
 {
 	this->entryIndex = entryIndex;
-	this->angleRadians = angleRadians;
+	this->angle = angle;
 	this->height = height;
 }
 
@@ -145,9 +109,9 @@ int DistantSky::AirObject::getTextureEntryIndex() const
 	return this->entryIndex;
 }
 
-double DistantSky::AirObject::getAngleRadians() const
+Radians DistantSky::AirObject::getAngle() const
 {
-	return this->angleRadians;
+	return this->angle;
 }
 
 double DistantSky::AirObject::getHeight() const
@@ -224,23 +188,22 @@ const Double3 &DistantSky::StarObject::getDirection() const
 	return this->direction;
 }
 
-DistantSky::TextureEntry::TextureEntry(std::string &&filename, Buffer2D<uint8_t> &&texture)
-	: filename(std::move(filename)), texture(std::move(texture)) { }
+DistantSky::TextureEntry::TextureEntry(TextureAssetReference &&textureAssetRef)
+	: textureAssetRef(std::move(textureAssetRef)) { }
 
-DistantSky::TextureSetEntry::TextureSetEntry(std::string &&filename,
-	Buffer<Buffer2D<uint8_t>> &&textures)
-	: filename(std::move(filename)), textures(std::move(textures)) { }
+DistantSky::TextureSetEntry::TextureSetEntry(std::string &&filename)
+	: filename(std::move(filename)) { }
 
 const int DistantSky::UNIQUE_ANGLES = 512;
 const double DistantSky::IDENTITY_DIM = 320.0;
-const double DistantSky::IDENTITY_ANGLE_RADIANS = 90.0 * Constants::DegToRad;
+const Radians DistantSky::IDENTITY_ANGLE = 90.0 * Constants::DegToRad;
 
 std::optional<int> DistantSky::getTextureEntryIndex(const std::string_view &filename) const
 {
 	const auto iter = std::find_if(this->textures.begin(), this->textures.end(),
 		[&filename](const TextureEntry &entry)
 	{
-		return entry.filename == filename;
+		return entry.textureAssetRef.filename == filename;
 	});
 
 	if (iter != this->textures.end())
@@ -303,13 +266,13 @@ void DistantSky::init(const LocationDefinition &locationDef, const ProvinceDefin
 	const int count = (random.next() % 4) + 2;
 
 	// Converts an Arena angle to an actual angle in radians.
-	auto arenaAngleToRadians = [](int angle)
+	auto arenaAngleToRadians = [](int arenaAngle)
 	{
 		// Arena angles: 0 = south, 128 = west, 256 = north, 384 = east.
 		// Change from clockwise to counter-clockwise and move 0 to east.
-		const double arenaRadians = Constants::TwoPi *
-			(static_cast<double>(angle) / static_cast<double>(DistantSky::UNIQUE_ANGLES));
-		const double flippedArenaRadians = Constants::TwoPi - arenaRadians;
+		const Radians arenaRadians = Constants::TwoPi *
+			(static_cast<double>(arenaAngle) / static_cast<double>(DistantSky::UNIQUE_ANGLES));
+		const Radians flippedArenaRadians = Constants::TwoPi - arenaRadians;
 		return flippedArenaRadians - Constants::HalfPi;
 	};
 
@@ -350,8 +313,7 @@ void DistantSky::init(const LocationDefinition &locationDef, const ProvinceDefin
 			{
 				if (!entryIndex.has_value())
 				{
-					Buffer2D<uint8_t> surface = textureManager.make8BitSurface(filename);
-					TextureEntry textureEntry(std::move(filename), std::move(surface));
+					TextureEntry textureEntry(TextureAssetReference(std::move(filename)));
 					this->textures.push_back(std::move(textureEntry));
 					entryIndex = static_cast<int>(this->textures.size()) - 1;
 				}
@@ -364,7 +326,7 @@ void DistantSky::init(const LocationDefinition &locationDef, const ProvinceDefin
 
 			// Convert from Arena units to radians.
 			const int arenaAngle = random.next() % DistantSky::UNIQUE_ANGLES;
-			const double angleRadians = arenaAngleToRadians(arenaAngle);
+			const Radians angle = arenaAngleToRadians(arenaAngle);
 
 			// The object is either land or a cloud, currently determined by 'randomHeight' as
 			// a shortcut. Land objects have no height. I'm doing it this way because LandObject
@@ -374,13 +336,13 @@ void DistantSky::init(const LocationDefinition &locationDef, const ProvinceDefin
 			if (isLand)
 			{
 				fixEntryIndexIfMissing();
-				this->landObjects.push_back(LandObject(*entryIndex, angleRadians));
+				this->landObjects.push_back(LandObject(*entryIndex, angle));
 			}
 			else
 			{
 				fixEntryIndexIfMissing();
 				const double height = static_cast<double>(yPos) / static_cast<double>(yPosLimit);
-				this->airObjects.push_back(AirObject(*entryIndex, angleRadians, height));
+				this->airObjects.push_back(AirObject(*entryIndex, angle, height));
 			}
 		}
 	};
@@ -416,7 +378,7 @@ void DistantSky::init(const LocationDefinition &locationDef, const ProvinceDefin
 		const int dist = LocationUtils::getMapDistance(locationGlobalPos, animLandGlobalPos);
 
 		// Position of the animated land on the horizon.
-		const double angle = std::atan2(
+		const Radians angle = std::atan2(
 			static_cast<double>(locationGlobalPos.y - animLandGlobalPos.y),
 			static_cast<double>(animLandGlobalPos.x - locationGlobalPos.x));
 
@@ -446,28 +408,10 @@ void DistantSky::init(const LocationDefinition &locationDef, const ProvinceDefin
 
 		if (!setEntryIndex.has_value())
 		{
-			// Determine which frames the animation will have.
-			// .DFAs have multiple frames, .IMGs do not.
-			const bool hasMultipleFrames = animFilename.find(".DFA") != std::string::npos;
-
-			if (hasMultipleFrames)
-			{
-				// Several frames of animation.
-				Buffer<Buffer2D<uint8_t>> surfaces = textureManager.make8BitSurfaces(animFilename);
-				TextureSetEntry textureSetEntry(std::move(animFilename), std::move(surfaces));
-				this->textureSets.push_back(std::move(textureSetEntry));
-			}
-			else
-			{
-				// Only one frame of animation.
-				Buffer2D<uint8_t> surface = textureManager.make8BitSurface(animFilename);
-				Buffer<Buffer2D<uint8_t>> buffers(1);
-				buffers.set(0, std::move(surface));
-
-				TextureSetEntry textureSetEntry(std::move(animFilename), std::move(buffers));
-				this->textureSets.push_back(std::move(textureSetEntry));
-			}
-
+			// .DFAs have multiple frames while .IMGs do not, although we can use the same texture
+			// manager function for both.
+			TextureSetEntry textureSetEntry(std::move(animFilename));
+			this->textureSets.push_back(std::move(textureSetEntry));
 			setEntryIndex = static_cast<int>(this->textureSets.size()) - 1;
 		}
 
@@ -509,13 +453,7 @@ void DistantSky::init(const LocationDefinition &locationDef, const ProvinceDefin
 			std::optional<int> entryIndex = this->getTextureEntryIndex(filename);
 			if (!entryIndex.has_value())
 			{
-				Buffer<Buffer2D<uint8_t>> surfaces = textureManager.make8BitSurfaces(filename);
-
-				DebugAssert(phaseIndex >= 0);
-				DebugAssert(phaseIndex < surfaces.getCount());
-				Buffer2D<uint8_t> &surface = surfaces.get(phaseIndex);
-
-				TextureEntry textureEntry(std::move(filename), std::move(surface));
+				TextureEntry textureEntry(TextureAssetReference(std::move(filename), phaseIndex));
 				this->textures.push_back(std::move(textureEntry));
 				entryIndex = static_cast<int>(this->textures.size()) - 1;
 			}
@@ -614,7 +552,7 @@ void DistantSky::init(const LocationDefinition &locationDef, const ProvinceDefin
 		// Palette used to obtain colors for small stars in constellations.
 		const Palette palette = []()
 		{
-			const std::string &colName = PaletteFile::fromName(PaletteName::Default);
+			const std::string &colName = ArenaPaletteName::Default;
 			COLFile colFile;
 			if (!colFile.init(colName.c_str()))
 			{
@@ -639,7 +577,8 @@ void DistantSky::init(const LocationDefinition &locationDef, const ProvinceDefin
 				{
 					const uint32_t color = [&palette, &subStar]()
 					{
-						const Color &paletteColor = palette.get().at(subStar.color);
+						DebugAssertIndex(palette, subStar.color);
+						const Color &paletteColor = palette[subStar.color];
 						return paletteColor.toARGB();
 					}();
 
@@ -654,8 +593,8 @@ void DistantSky::init(const LocationDefinition &locationDef, const ProvinceDefin
 
 						// Convert percentages to radians. Positive X is counter-clockwise, positive
 						// Y is up.
-						const double dxRadians = dxPercent * DistantSky::IDENTITY_ANGLE_RADIANS;
-						const double dyRadians = dyPercent * DistantSky::IDENTITY_ANGLE_RADIANS;
+						const Radians dxRadians = dxPercent * DistantSky::IDENTITY_ANGLE;
+						const Radians dyRadians = dyPercent * DistantSky::IDENTITY_ANGLE;
 
 						// Apply rotations to base direction.
 						const Matrix4d xRotation = Matrix4d::xRotation(dxRadians);
@@ -685,8 +624,7 @@ void DistantSky::init(const LocationDefinition &locationDef, const ProvinceDefin
 				std::optional<int> entryIndex = this->getTextureEntryIndex(starFilename);
 				if (!entryIndex.has_value())
 				{
-					Buffer2D<uint8_t> surface = textureManager.make8BitSurface(starFilename);
-					TextureEntry textureEntry(std::move(starFilename), std::move(surface));
+					TextureEntry textureEntry(TextureAssetReference(std::move(starFilename)));
 					this->textures.push_back(std::move(textureEntry));
 					entryIndex = static_cast<int>(this->textures.size()) - 1;
 				}
@@ -700,8 +638,7 @@ void DistantSky::init(const LocationDefinition &locationDef, const ProvinceDefin
 		std::optional<int> sunTextureIndex = this->getTextureEntryIndex(sunFilename);
 		if (!sunTextureIndex.has_value())
 		{
-			Buffer2D<uint8_t> surface = textureManager.make8BitSurface(sunFilename);
-			TextureEntry textureEntry(std::move(sunFilename), std::move(surface));
+			TextureEntry textureEntry(TextureAssetReference(std::move(sunFilename)));
 			this->textures.push_back(std::move(textureEntry));
 			sunTextureIndex = static_cast<int>(this->textures.size()) - 1;
 		}
@@ -776,49 +713,18 @@ int DistantSky::getSunEntryIndex() const
 	return *this->sunEntryIndex;
 }
 
-BufferView2D<const uint8_t> DistantSky::getTexture(int index) const
+const TextureAssetReference &DistantSky::getTextureAssetRef(int index) const
 {
 	DebugAssertIndex(this->textures, index);
 	const TextureEntry &entry = this->textures[index];
-	const Buffer2D<uint8_t> &buffer = entry.texture;
-	return BufferView2D<const uint8_t>(buffer.get(), buffer.getWidth(), buffer.getHeight());
+	return entry.textureAssetRef;
 }
 
-int DistantSky::getTextureSetCount(int index) const
-{
-	DebugAssertIndex(this->textureSets, index);
-	return this->textureSets[index].textures.getCount();
-}
-
-BufferView2D<const uint8_t> DistantSky::getTextureSetElement(int index, int elementIndex) const
+const std::string &DistantSky::getTextureSetFilename(int index) const
 {
 	DebugAssertIndex(this->textureSets, index);
 	const TextureSetEntry &entry = this->textureSets[index];
-	const Buffer2D<uint8_t> &buffer = entry.textures.get(elementIndex);
-	return BufferView2D<const uint8_t>(buffer.get(), buffer.getWidth(), buffer.getHeight());
-}
-
-int DistantSky::getStarCountFromDensity(int starDensity)
-{
-	if (starDensity == 0)
-	{
-		// Classic.
-		return 40;
-	}
-	else if (starDensity == 1)
-	{
-		// Moderate.
-		return 1000;
-	}
-	else if (starDensity == 2)
-	{
-		// High.
-		return 8000;
-	}
-	else
-	{
-		DebugUnhandledReturnMsg(int, std::to_string(starDensity));
-	}
+	return entry.filename;
 }
 
 void DistantSky::tick(double dt)
@@ -826,6 +732,6 @@ void DistantSky::tick(double dt)
 	// Only animated distant land needs updating.
 	for (auto &anim : this->animLandObjects)
 	{
-		anim.update(dt, *this);
+		anim.update(dt);
 	}
 }
